@@ -17,13 +17,6 @@ const (
 //nolint:gochecknoglobals
 var (
 	NameRe = regexp.MustCompile(`[a-zA-Z0-9+\-_?=][.a-zA-Z0-9+\-_?=]*`)
-	PathRe = regexp.MustCompile(fmt.Sprintf(
-		`^%v/([%v]{%d})-(%v)$`,
-		regexp.QuoteMeta(StoreDir),
-		nixbase32.Alphabet,
-		nixbase32.EncodedLen(PathHashSize),
-		NameRe,
-	))
 
 	// Length of the hash portion of the store path in base32.
 	encodedPathHashSize = nixbase32.EncodedLen(PathHashSize)
@@ -87,7 +80,7 @@ func Validate(s string) error {
 		return fmt.Errorf("unable to parse path: mismatching store path prefix for path %v", s)
 	}
 
-	if err := nixbase32.ValidateString(s[hashOffset : hashOffset+encodedPathHashSize]); err != nil {
+	if _, err := nixbase32.DecodeString(s[hashOffset : hashOffset+encodedPathHashSize]); err != nil {
 		return fmt.Errorf("unable to parse path: error validating path nixbase32 %v: %v", err, s)
 	}
 

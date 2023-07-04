@@ -1,16 +1,15 @@
-package nixbase32_test
+package nixbase32
 
 import (
+	"bytes"
 	"math/rand"
 	"strconv"
+	"strings"
 	"testing"
-
-	"github.com/nix-community/go-nix/pkg/nixbase32"
-	"github.com/stretchr/testify/assert"
 )
 
 //nolint:gochecknoglobals
-var tt = []struct {
+var tests = []struct {
 	dec []byte
 	enc string
 }{
@@ -27,56 +26,44 @@ var tt = []struct {
 	},
 }
 
-func TestEncode(t *testing.T) {
-	for i := range tt {
-		assert.Equal(t, tt[i].enc, nixbase32.EncodeToString(tt[i].dec))
-	}
-}
-
-func TestDecode(t *testing.T) {
-	for i := range tt {
-		b, err := nixbase32.DecodeString(tt[i].enc)
-
-		if assert.NoError(t, err) {
-			assert.Equal(t, tt[i].dec, b)
+func TestEncodeToString(t *testing.T) {
+	for _, test := range tests {
+		if got := EncodeToString(test.dec); got != test.enc {
+			t.Errorf("EncodeToString(%q) = %q; want %q", test.dec, got, test.enc)
 		}
 	}
 }
 
-func TestValidate(t *testing.T) {
-	for i := range tt {
-		err := nixbase32.ValidateString(tt[i].enc)
-
-		assert.NoError(t, err)
+func TestDecodeString(t *testing.T) {
+	for _, test := range tests {
+		got, err := DecodeString(test.enc)
+		if err != nil || !bytes.Equal(got, test.dec) {
+			t.Errorf("DecodeString(%q) = %02x, %v; want %02x, <nil>", test.enc, got, err, test.dec)
+		}
 	}
-}
-
-func TestMustDecodeString(t *testing.T) {
-	for i := range tt {
-		b := nixbase32.MustDecodeString(tt[i].enc)
-		assert.Equal(t, tt[i].dec, b)
-	}
-}
-
-func TestDecodeInvalid(t *testing.T) {
 	invalidEncodings := []string{
+		// invalid character
+		"0t",
 		// this is invalid encoding, because it encodes 10 1-bytes, so the carry
 		// would be 2 1-bytes
 		"zz",
 		// this is an even more specific example - it'd decode as 00000000 11
 		"c0",
 	}
+	for _, bad := range invalidEncodings {
+		if got, err := DecodeString(bad); err == nil {
+			t.Errorf("DecodeString(%q) = %q, <nil>; want _, <error>", bad, got)
+		}
+	}
+}
 
-	for _, c := range invalidEncodings {
-		_, err := nixbase32.DecodeString(c)
-		assert.Error(t, err)
-
-		err = nixbase32.ValidateString(c)
-		assert.Error(t, err)
-
-		assert.Panics(t, func() {
-			_ = nixbase32.MustDecodeString(c)
-		})
+func TestIs(t *testing.T) {
+	for c := int16(0); c <= 0xff; c++ {
+		got := Is(byte(c))
+		want := strings.IndexByte(alphabet, byte(c)) != -1
+		if got != want {
+			t.Errorf("Is(%q) = %t; want %t", byte(c), got, want)
+		}
 	}
 }
 
@@ -89,7 +76,7 @@ func BenchmarkEncode(b *testing.B) {
 
 		b.Run(strconv.Itoa(s), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				nixbase32.EncodeToString(bytes)
+				EncodeToString(bytes)
 			}
 		})
 	}
@@ -101,11 +88,11 @@ func BenchmarkDecode(b *testing.B) {
 	for _, s := range sizes {
 		bytes := make([]byte, s)
 		rand.Read(bytes) //nolint:gosec
-		input := nixbase32.EncodeToString(bytes)
+		input := EncodeToString(bytes)
 
 		b.Run(strconv.Itoa(s), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				_, err := nixbase32.DecodeString(input)
+				_, err := DecodeString(input)
 				if err != nil {
 					b.Fatal("error: %w", err)
 				}

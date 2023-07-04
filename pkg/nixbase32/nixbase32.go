@@ -1,3 +1,13 @@
+/*
+Package nixbase32 implements the slightly odd "base32" encoding that's used
+in Nix.
+
+Nix uses a custom alphabet. Contrary to other implementations (RFC4648),
+encoding to "nix base32" also reads in characters in reverse order (and
+doesn't use any padding), which makes adopting encoding/base32 hard.
+This package provides some of the functions defined in
+encoding/base32.Encoding.
+*/
 package nixbase32
 
 import (
@@ -5,59 +15,41 @@ import (
 	"strings"
 )
 
-// Alphabet contains the list of valid characters for the Nix base32 alphabet.
-const Alphabet = "0123456789abcdfghijklmnpqrsvwxyz"
+// alphabet contains the list of valid characters for the Nix base32 alphabet.
+const alphabet = "0123456789abcdfghijklmnpqrsvwxyz"
 
-func decodeString(s string, dst []byte) error {
-	var dstLen int
-	if dst != nil {
-		dstLen = len(dst)
-	} else {
-		dstLen = DecodedLen(len(s))
-	}
+// DecodeString returns the bytes represented by the nixbase32 string s or
+// returns an error.
+func DecodeString(s string) ([]byte, error) {
+	dst := make([]byte, DecodedLen(len(s)))
 
 	for n := 0; n < len(s); n++ {
 		c := s[len(s)-n-1]
 
-		digit := strings.IndexByte(Alphabet, c)
+		digit := strings.IndexByte(alphabet, c)
 		if digit == -1 {
-			return fmt.Errorf("character %v not in alphabet", c)
+			return nil, fmt.Errorf("decode base32: character %q not in alphabet", c)
 		}
 
-		b := uint(n * 5)
-		i := b / 8
-		j := b % 8
+		b := uint64(n * 5)
+		i := int(b / 8)
+		j := int(b % 8)
 
 		// OR the main pattern
-		if dst != nil {
-			dst[i] |= byte(digit) << j
-		}
+		dst[i] |= byte(digit) << j
 
 		// calculate the "carry pattern"
 		carry := byte(digit) >> (8 - j)
 
-		// if we're at the end of dst…
-		if i == uint(dstLen-1) {
-			// but have a nonzero carry, the encoding is invalid.
-			if carry != 0 {
-				return fmt.Errorf("invalid encoding")
-			}
-		} else if dst != nil {
+		if i+1 < len(dst) {
 			dst[i+1] |= carry
+		} else if carry != 0 {
+			// but have a nonzero carry, the encoding is invalid.
+			return nil, fmt.Errorf("decode base32: non-zero padding")
 		}
 	}
 
-	return nil
-}
-
-// ValidateBytes validates if a byte slice is valid nixbase32.
-func ValidateBytes(b []byte) error {
-	return ValidateString(string(b))
-}
-
-// ValidateString validates if a string is valid nixbase32.
-func ValidateString(s string) error {
-	return decodeString(s, nil)
+	return dst, nil
 }
 
 // EncodedLen returns the length in bytes of the base32 encoding of an input
@@ -97,27 +89,14 @@ func EncodeToString(src []byte) string {
 			c |= src[i+1] << (8 - j)
 		}
 
-		dst.WriteByte(Alphabet[c&0x1f])
+		dst.WriteByte(alphabet[c&0x1f])
 	}
 
 	return dst.String()
 }
 
-// DecodeString returns the bytes represented by the nixbase32 string s or
-// returns an error.
-func DecodeString(s string) ([]byte, error) {
-	dst := make([]byte, DecodedLen(len(s)))
-
-	return dst, decodeString(s, dst)
-}
-
-// MustDecodeString returns the bytes represented by the nixbase32 string s or
-// panics on error.
-func MustDecodeString(s string) []byte {
-	b, err := DecodeString(s)
-	if err != nil {
-		panic(err)
-	}
-
-	return b
+// Is reports whether the given byte is part of the nixbase32 alphabet.
+func Is(c byte) bool {
+	return '0' <= c && c <= '9' ||
+		'a' <= c && c <= 'z' && c != 'e' && c != 'o' && c != 'u' && c != 't'
 }
