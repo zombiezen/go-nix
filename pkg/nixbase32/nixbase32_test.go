@@ -26,10 +26,48 @@ var tests = []struct {
 	},
 }
 
+//nolint:gochecknoglobals
+var invalidEncodings = []string{
+	// invalid character
+	"0t",
+	// this is invalid encoding, because it encodes 10 1-bytes, so the carry
+	// would be 2 1-bytes
+	"zz",
+	// this is an even more specific example - it'd decode as 00000000 11
+	"c0",
+}
+
+func TestEncode(t *testing.T) {
+	for _, test := range tests {
+		got := make([]byte, EncodedLen(len(test.dec)))
+		Encode(got, test.dec)
+		if string(got) != test.enc {
+			t.Errorf("after Encode(dst, %q), dst = %q; want %q", test.dec, got, test.enc)
+		}
+	}
+}
+
 func TestEncodeToString(t *testing.T) {
 	for _, test := range tests {
 		if got := EncodeToString(test.dec); got != test.enc {
 			t.Errorf("EncodeToString(%q) = %q; want %q", test.dec, got, test.enc)
+		}
+	}
+}
+
+func TestDecode(t *testing.T) {
+	for _, test := range tests {
+		got := make([]byte, DecodedLen(len(test.enc)))
+		n, err := Decode(got, []byte(test.enc))
+		got = got[:n]
+		if err != nil || !bytes.Equal(got, test.dec) {
+			t.Errorf("Decode(dst, %q) = %d, %v (dst=%02x); want %d, <nil> (dst=%02x)", test.enc, n, err, got, len(test.dec), test.dec)
+		}
+	}
+	for _, bad := range invalidEncodings {
+		n, err := Decode(make([]byte, DecodedLen(len(bad))), []byte(bad))
+		if err == nil {
+			t.Errorf("Decode(dst, %q) = %d, <nil>; want _, <error>", bad, n)
 		}
 	}
 }
@@ -41,18 +79,27 @@ func TestDecodeString(t *testing.T) {
 			t.Errorf("DecodeString(%q) = %02x, %v; want %02x, <nil>", test.enc, got, err, test.dec)
 		}
 	}
-	invalidEncodings := []string{
-		// invalid character
-		"0t",
-		// this is invalid encoding, because it encodes 10 1-bytes, so the carry
-		// would be 2 1-bytes
-		"zz",
-		// this is an even more specific example - it'd decode as 00000000 11
-		"c0",
-	}
 	for _, bad := range invalidEncodings {
 		if got, err := DecodeString(bad); err == nil {
 			t.Errorf("DecodeString(%q) = %q, <nil>; want _, <error>", bad, got)
+		}
+	}
+}
+
+func TestEncodedLen(t *testing.T) {
+	for _, test := range tests {
+		n := len(test.dec)
+		if got, want := EncodedLen(n), len(test.enc); got != want {
+			t.Errorf("EncodedLen(%d) = %d; want %d", n, got, want)
+		}
+	}
+}
+
+func TestDecodedLen(t *testing.T) {
+	for _, test := range tests {
+		n := len(test.enc)
+		if got, want := DecodedLen(n), len(test.dec); got != want {
+			t.Errorf("DecodedLen(%d) = %d; want %d", n, got, want)
 		}
 	}
 }
