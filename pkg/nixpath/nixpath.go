@@ -1,11 +1,15 @@
 // Package nixpath parses and renders Nix store paths.
+//
+// Deprecated: Use the functions in the [nix] package instead.
 package nixpath
 
 import (
 	"fmt"
 	"path"
 	"regexp"
+	"strings"
 
+	"github.com/nix-community/go-nix/nix"
 	"github.com/nix-community/go-nix/pkg/nixbase32"
 )
 
@@ -28,6 +32,8 @@ var (
 )
 
 // NixPath represents a bare nix store path, without any paths underneath `/nix/store/…-…`.
+//
+// Deprecated: Use [nix.ObjectName] instead.
 type NixPath struct {
 	Name   string
 	Digest []byte
@@ -44,18 +50,24 @@ func (n *NixPath) Validate() error {
 // FromString parses a path string into a nix path,
 // verifying it's syntactically valid
 // It returns an error if it fails to parse.
+//
+// Deprecated: Use [nix.ParseStorePath].
 func FromString(s string) (*NixPath, error) {
-	if err := Validate(s); err != nil {
+	dir, name, err := nix.ParseStorePath(s)
+	if err != nil {
 		return nil, err
 	}
+	if dir != nix.DefaultStoreDirectory {
+		return nil, fmt.Errorf("unable to parse path: mismatching store path prefix for path %v", s)
+	}
 
-	digest, err := nixbase32.DecodeString(s[hashOffset : hashOffset+encodedPathHashSize])
+	digest, err := nixbase32.DecodeString(name.Hash())
 	if err != nil {
 		return nil, fmt.Errorf("unable to decode hash: %v", err)
 	}
 
 	return &NixPath{
-		Name:   s[nameOffset:],
+		Name:   name.Name(),
 		Digest: digest,
 	}, nil
 }
@@ -66,44 +78,23 @@ func FromString(s string) (*NixPath, error) {
 // This should be used when assembling store paths in hashing contexts.
 // Even if this code is running on windows, we want to use forward
 // slashes to construct them.
+//
+// Deprecated: Use [nix.StoreDirectory.StorePath].
 func Absolute(name string) string {
 	return path.Join(StoreDir, name)
 }
 
 // Validate validates a path string, verifying it's syntactically valid.
+//
+// Deprecated: Use one of [nix.ParseStorePath] or [nix.ParseObjectName]
+// depending on your needs.
 func Validate(s string) error {
-	if len(s) < nameOffset+1 {
-		return fmt.Errorf("unable to parse path: invalid path length %d for path %v", len(s), s)
-	}
-
-	if s[:len(StoreDir)] != StoreDir {
+	name, ok := strings.CutPrefix(s, StoreDir+"/")
+	if !ok {
 		return fmt.Errorf("unable to parse path: mismatching store path prefix for path %v", s)
 	}
-
-	if _, err := nixbase32.DecodeString(s[hashOffset : hashOffset+encodedPathHashSize]); err != nil {
-		return fmt.Errorf("unable to parse path: error validating path nixbase32 %v: %v", err, s)
+	if _, err := nix.ParseObjectName(name); err != nil {
+		return fmt.Errorf("unable to parse path: %v", err)
 	}
-
-	for _, c := range s[nameOffset:] {
-		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
-			switch c {
-			case '-':
-				continue
-			case '_':
-				continue
-			case '.':
-				continue
-			case '+':
-				continue
-			case '?':
-				continue
-			case '=':
-				continue
-			}
-
-			return fmt.Errorf("unable to parse path: invalid character in path: %v", s)
-		}
-	}
-
 	return nil
 }
