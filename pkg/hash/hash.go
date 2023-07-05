@@ -1,5 +1,7 @@
 // Package hash provides methods to serialize and deserialize some of the
 // hashes used in nix code and .narinfo files.
+//
+// Deprecated: Use [github.com/nix-community/go-nix/nix.Hash] instead.
 package hash
 
 import (
@@ -11,6 +13,8 @@ import (
 // the internal hash state.
 // It can also be used to parse existing digests.
 // In this case, the writer interface is not available.
+//
+// Deprecated: Use [github.com/nix-community/go-nix/nix.Hash] instead.
 type Hash struct {
 	HashType int
 
@@ -36,8 +40,8 @@ func (h *Hash) Digest() []byte {
 // HashTypeString returns a string representation of the HashType. For unknown
 // types, it will return an empty String.
 func (h *Hash) HashTypeString() string {
-	if str, ok := hashtypeToNixHashString[h.HashType]; ok {
-		return str
+	if typ, ok := mhTypeToHashType[h.HashType]; ok {
+		return typ.String()
 	}
 
 	return ""

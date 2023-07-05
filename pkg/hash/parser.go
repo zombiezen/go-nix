@@ -5,8 +5,17 @@ import (
 	"strings"
 
 	mh "github.com/multiformats/go-multihash/core"
+	"github.com/nix-community/go-nix/nix"
 	"github.com/nix-community/go-nix/pkg/nixbase32"
 )
+
+//nolint:gochecknoglobals
+var hashtypeToMH = map[nix.HashType]int{
+	nix.MD5:    mh.MD5,
+	nix.SHA1:   mh.SHA1,
+	nix.SHA256: mh.SHA2_256,
+	nix.SHA512: mh.SHA2_512,
+}
 
 // ParseNixBase32 returns a new Hash struct, by parsing a hashtype:nixbase32 string, or an error.
 // It only supports parsing strings specifying sha1, sha256 and sha512 hashtypes,
@@ -17,45 +26,29 @@ func ParseNixBase32(s string) (*Hash, error) {
 		return nil, fmt.Errorf("unable to find separator in %v", s)
 	}
 
-	hashTypeStr := s[:i]
-
-	var hashType int
-
-	switch hashTypeStr {
-	case "sha1":
-		hashType = mh.SHA1
-	case "sha256":
-		hashType = mh.SHA2_256
-	case "sha512":
-		hashType = mh.SHA2_512
-	default:
-		return nil, fmt.Errorf("unknown hash type string: %v", hashTypeStr)
+	hashType, err := nix.ParseHashType(s[:i])
+	if err != nil {
+		return nil, err
 	}
-
-	// The digest afterwards is nixbase32-encoded.
-	// Calculate the length of that string, in nixbase32 encoding
-	h, err := mh.GetHasher(uint64(hashType))
+	encodedDigestStr := s[i+1:]
+	if len(encodedDigestStr) != nixbase32.EncodedLen(hashType.Size()) {
+		return nil, fmt.Errorf("invalid length for encoded digest line %v", s)
+	}
+	parsed, err := nix.ParseHash(s)
 	if err != nil {
 		return nil, err
 	}
 
-	digestLenBytes := h.Size()
-	encodedDigestLen := nixbase32.EncodedLen(digestLenBytes)
-
-	encodedDigestStr := s[i+1:]
-	if len(encodedDigestStr) != encodedDigestLen {
-		return nil, fmt.Errorf("invalid length for encoded digest line %v", s)
-	}
-
-	digest, err := nixbase32.DecodeString(encodedDigestStr)
+	mhType := hashtypeToMH[hashType]
+	h, err := mh.GetHasher(uint64(mhType))
 	if err != nil {
 		return nil, err
 	}
 
 	return &Hash{
-		HashType: hashType,
+		HashType: mhType,
 		// even though the hash function is never written too, we still keep it around, for h.hash.Size() checks etc.
 		hash:   h,
-		digest: digest,
+		digest: parsed.Bytes(nil),
 	}, nil
 }

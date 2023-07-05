@@ -1,19 +1,19 @@
 package hash
 
 import (
-	"encoding/base64"
 	"fmt"
 
 	"github.com/multiformats/go-multihash"
 	mh "github.com/multiformats/go-multihash/core"
-	"github.com/nix-community/go-nix/pkg/nixbase32"
+	"github.com/nix-community/go-nix/nix"
 )
 
 //nolint:gochecknoglobals
-var hashtypeToNixHashString = map[int]string{
-	mh.SHA1:     "sha1",
-	mh.SHA2_256: "sha256",
-	mh.SHA2_512: "sha512",
+var mhTypeToHashType = map[int]nix.HashType{
+	mh.MD5:      nix.MD5,
+	mh.SHA1:     nix.SHA1,
+	mh.SHA2_256: nix.SHA256,
+	mh.SHA2_512: nix.SHA512,
 }
 
 // Multihash returns the digest, in multihash format.
@@ -37,11 +37,12 @@ func (h *Hash) NixString() string {
 		panic("invalid digest length")
 	}
 
-	if hashStr, ok := hashtypeToNixHashString[h.HashType]; ok {
-		return fmt.Sprintf("%v:%v", hashStr, nixbase32.EncodeToString(digest))
+	typ := mhTypeToHashType[h.HashType]
+	if !typ.IsValid() {
+		panic(fmt.Sprintf("unable to encode %v to nix string", h.HashType))
 	}
 
-	panic(fmt.Sprintf("unable to encode %v to nix string", h.HashType))
+	return nix.NewHash(typ, digest).Base32()
 }
 
 func (h *Hash) SRIString() string {
@@ -52,9 +53,10 @@ func (h *Hash) SRIString() string {
 		panic("invalid digest length")
 	}
 
-	if hashStr, ok := hashtypeToNixHashString[h.HashType]; ok {
-		return fmt.Sprintf("%v-%v", hashStr, base64.StdEncoding.EncodeToString(digest))
+	typ := mhTypeToHashType[h.HashType]
+	if !typ.IsValid() {
+		panic(fmt.Sprintf("unable to encode %v to nix string", h.HashType))
 	}
 
-	panic(fmt.Sprintf("unable to encode %v to nix string", h.HashType))
+	return nix.NewHash(typ, digest).SRI()
 }
