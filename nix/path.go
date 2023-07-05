@@ -67,7 +67,7 @@ func (dir StoreDirectory) ParsePath(path string) (name ObjectName, sub string, e
 	}
 	cleaned := slashpath.Clean(path)
 	dirPrefix := slashpath.Clean(string(dir)) + "/"
-	tail, ok := strings.CutPrefix(cleaned, dirPrefix)
+	tail, ok := cutPrefix(cleaned, dirPrefix)
 	if !ok {
 		return "", "", fmt.Errorf("parse nix store path %s: outside %s", path, dir)
 	}
@@ -136,6 +136,13 @@ func (name ObjectName) Name() string {
 		return ""
 	}
 	return string(name[objectNameHashLength+len("-"):])
+}
+
+func cutPrefix(s, prefix string) (after string, found bool) {
+	if !strings.HasPrefix(s, prefix) {
+		return s, false
+	}
+	return s[len(prefix):], true
 }
 
 func isNameChar(c byte) bool {

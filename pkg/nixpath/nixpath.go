@@ -89,7 +89,7 @@ func Absolute(name string) string {
 // Deprecated: Use one of [nix.ParseStorePath] or [nix.ParseObjectName]
 // depending on your needs.
 func Validate(s string) error {
-	name, ok := strings.CutPrefix(s, StoreDir+"/")
+	name, ok := cutPrefix(s, StoreDir+"/")
 	if !ok {
 		return fmt.Errorf("unable to parse path: mismatching store path prefix for path %v", s)
 	}
@@ -97,4 +97,11 @@ func Validate(s string) error {
 		return fmt.Errorf("unable to parse path: %v", err)
 	}
 	return nil
+}
+
+func cutPrefix(s, prefix string) (after string, found bool) {
+	if !strings.HasPrefix(s, prefix) {
+		return s, false
+	}
+	return s[len(prefix):], true
 }
