@@ -83,6 +83,7 @@ func (typ HashType) String() string {
 // A Hash is an output of a hash algorithm.
 // The zero value is an empty hash with no type.
 type Hash struct {
+	_    [0]func() // Prevent comparisons for future-proofing.
 	typ  HashType
 	hash [sha512.Size]byte
 }
@@ -120,6 +121,16 @@ func ParseHash(s string) (Hash, error) {
 // It returns zero for a zero Hash.
 func (h Hash) Type() HashType {
 	return h.typ
+}
+
+// IsZero reports whether the hash is the zero hash.
+func (h Hash) IsZero() bool {
+	return h.typ == 0
+}
+
+// Equal reports whether h == h2.
+func (h Hash) Equal(h2 Hash) bool {
+	return h.typ == h2.typ && h.hash == h2.hash
 }
 
 // Bytes appends the raw bytes of the hash to dst
