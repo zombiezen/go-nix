@@ -2,8 +2,8 @@ package narinfo_test
 
 import (
 	"bytes"
-	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -201,46 +201,41 @@ func TestNarInfoWithoutFileFields(t *testing.T) {
 }
 
 func TestBigNarinfo(t *testing.T) {
-	f, err := os.Open("../../test/testdata/big.narinfo")
+	f, err := os.Open(filepath.Join("testdata", "big.narinfo"))
 	if err != nil {
-		panic(err)
+		t.Fatal(err)
 	}
 	defer f.Close()
 
-	_, err = narinfo.Parse(f)
-	assert.NoError(t, err, "Parsing big .narinfo files shouldn't fail")
+	if _, err := narinfo.Parse(f); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func BenchmarkNarInfo(b *testing.B) {
 	b.Run("Regular", func(b *testing.B) {
+		b.SetBytes(int64(len(strNarinfoSample)))
 		for i := 0; i < b.N; i++ {
-			_, err := narinfo.Parse(strings.NewReader(strNarinfoSample))
-			assert.NoError(b, err)
+			if _, err := narinfo.Parse(strings.NewReader(strNarinfoSample)); err != nil {
+				b.Fatal(err)
+			}
 		}
 	})
 
-	{
-		f, err := os.Open("../../test/testdata/big.narinfo")
+	b.Run("Big", func(b *testing.B) {
+		big, err := os.ReadFile(filepath.Join("testdata", "big.narinfo"))
 		if err != nil {
-			panic(err)
+			b.Fatal(err)
 		}
-		defer f.Close()
+		b.ResetTimer()
+		b.SetBytes(int64(len(big)))
 
-		var buf bytes.Buffer
-		_, err = io.ReadAll(&buf)
-		if err != nil {
-			panic(err)
-		}
-
-		big := buf.Bytes()
-
-		b.Run("Big", func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
-				_, err := narinfo.Parse(bytes.NewReader(big))
-				assert.NoError(b, err)
+		for i := 0; i < b.N; i++ {
+			if _, err := narinfo.Parse(bytes.NewReader(big)); err != nil {
+				b.Fatal(err)
 			}
-		})
-	}
+		}
+	})
 }
 
 func mustLoadSig(s string) signature.Signature {
