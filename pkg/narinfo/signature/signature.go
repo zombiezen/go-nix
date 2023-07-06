@@ -1,3 +1,9 @@
+// Package signature provides types for signing keys.
+//
+// Deprecated: Use [github.com/nix-community/go-nix/nix.Signature],
+// [github.com/nix-community/go-nix/nix.PublicKey],
+// or [github.com/nix-community/go-nix/nix.PrivateKey]
+// rather than the types in this package.
 package signature
 
 import (
@@ -6,6 +12,8 @@ import (
 )
 
 // Signature represents a named ed25519 signature.
+//
+// Deprecated: Use [github.com/nix-community/go-nix/nix.Signature] instead.
 type Signature struct {
 	Name string
 	Data []byte
@@ -18,6 +26,8 @@ func (s Signature) String() string {
 
 // ParseSignature decodes a <keyname>:<base64-signature-data>
 // and returns a *Signature, or an error.
+//
+// Deprecated: Use [github.com/nix-community/go-nix/nix.ParseSignature] instead.
 func ParseSignature(s string) (Signature, error) {
 	name, data, err := decode(s, ed25519.SignatureSize)
 	if err != nil {
@@ -29,6 +39,8 @@ func ParseSignature(s string) (Signature, error) {
 
 // VerifyFirst returns the result of the first signature that matches a public
 // key. If no matching public key was found, it returns false.
+//
+// Deprecated: Use [github.com/nix-community/go-nix/nix.VerifyNARInfo] instead.
 func VerifyFirst(fingerprint string, signatures []Signature, pubKeys []PublicKey) bool {
 	for _, key := range pubKeys {
 		for _, sig := range signatures {

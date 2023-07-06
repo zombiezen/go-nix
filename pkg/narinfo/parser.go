@@ -37,7 +37,7 @@ func Parse(r io.Reader) (*NarInfo, error) {
 		n.References = append(n.References, string(ref))
 	}
 	for _, sig := range info.Sig {
-		sig2, err := signature.ParseSignature(sig)
+		sig2, err := signature.ParseSignature(sig.String())
 		if err != nil {
 			return nil, err
 		}

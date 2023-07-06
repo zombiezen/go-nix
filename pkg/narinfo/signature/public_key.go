@@ -6,6 +6,8 @@ import (
 )
 
 // PublicKey represents a named ed25519 public key.
+//
+// Deprecated: Use [github.com/nix-community/go-nix/nix.PublicKey] instead.
 type PublicKey struct {
 	Name string
 	Data ed25519.PublicKey
@@ -27,6 +29,8 @@ func (pk PublicKey) Verify(fingerprint string, sig Signature) bool {
 }
 
 // ParsePublicKey decodes a serialized string, and returns a PublicKey struct, or an error.
+//
+// Deprecated: Use [github.com/nix-community/go-nix/nix.ParsePublicKey] instead.
 func ParsePublicKey(s string) (PublicKey, error) {
 	name, data, err := decode(s, ed25519.PublicKeySize)
 	if err != nil {

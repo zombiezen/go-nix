@@ -11,6 +11,8 @@ import (
 //
 // rand: uses crypto/rand.Reader if nil
 // name: key identifier used by Nix
+//
+// Deprecated: Use [github.com/nix-community/go-nix/nix.GenerateKey] instead.
 func GenerateKeypair(name string, rand io.Reader) (secretKey SecretKey, publicKey PublicKey, err error) {
 	pub, sec, err := ed25519.GenerateKey(rand)
 	if err != nil {
@@ -21,6 +23,8 @@ func GenerateKeypair(name string, rand io.Reader) (secretKey SecretKey, publicKe
 }
 
 // SecretKey represents a named ed25519 private key.
+//
+// Deprecated: Use [github.com/nix-community/go-nix/nix.PrivateKey] instead.
 type SecretKey struct {
 	name string
 	data ed25519.PrivateKey
@@ -32,6 +36,8 @@ func (sk SecretKey) String() string {
 }
 
 // LoadSecretKey decodes a <keyname>:<base64> pair into a SecretKey.
+//
+// Deprecated: Use [github.com/nix-community/go-nix/nix.ParsePrivateKey] instead.
 func LoadSecretKey(s string) (SecretKey, error) {
 	name, data, err := decode(s, ed25519.PrivateKeySize)
 	if err != nil {
@@ -50,6 +56,8 @@ func (sk SecretKey) ToPublicKey() PublicKey {
 
 // Sign generates a signature for the fingerprint.
 // If rand is nil, it will use rand.Reader.
+//
+// Deprecated: Use [github.com/nix-community/go-nix/nix.SignNARInfo] instead.
 func (sk SecretKey) Sign(rand io.Reader, fingerprint string) (Signature, error) {
 	// passing crypto.Hash(0) as ed25519 doesn't support pre-hashed messages
 	// (see docs)

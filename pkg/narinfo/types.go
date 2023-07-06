@@ -58,7 +58,10 @@ func (n *NarInfo) toNew() *nix.NARInfo {
 		info.References = append(info.References, nix.ObjectName(ref))
 	}
 	for _, sig := range n.Signatures {
-		info.Sig = append(info.Sig, sig.String())
+		sig2, err := nix.ParseSignature(sig.String())
+		if err == nil {
+			info.Sig = append(info.Sig, sig2)
+		}
 	}
 	if n.CA != "" {
 		info.CA, _ = nix.ParseContentAddress(n.CA)

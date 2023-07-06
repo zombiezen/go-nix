@@ -52,7 +52,7 @@ type NARInfo struct {
 	// Deprecated: Ignore this field.
 	System string
 	// Sig is a set of signatures for this object.
-	Sig []string
+	Sig []*Signature
 	// CA is an optional content-addressability assertion.
 	CA ContentAddress
 }
@@ -62,7 +62,7 @@ func (info *NARInfo) Clone() *NARInfo {
 	info2 := new(NARInfo)
 	*info2 = *info
 	info.References = append([]ObjectName(nil), info.References...)
-	info.Sig = append([]string(nil), info.Sig...)
+	info.Sig = append([]*Signature(nil), info.Sig...)
 	return info
 }
 
@@ -83,11 +83,11 @@ func (info *NARInfo) IsValid() bool {
 }
 
 // AddSignatures adds signatures that are not already present in info.
-func (info *NARInfo) AddSignatures(sigs ...string) {
+func (info *NARInfo) AddSignatures(sigs ...*Signature) {
 addLoop:
 	for _, newSig := range sigs {
 		for _, oldSig := range info.Sig {
-			if oldSig == newSig {
+			if oldSig.String() == newSig.String() {
 				continue addLoop
 			}
 		}
@@ -317,7 +317,11 @@ func (info *NARInfo) UnmarshalText(src []byte) (err error) {
 			}
 			info.System = string(value)
 		case "Sig":
-			info.Sig = append(info.Sig, string(value))
+			sig := new(Signature)
+			if err := sig.UnmarshalText(value); err != nil {
+				return fmt.Errorf("line %d: Sig: %v", lineno, err)
+			}
+			info.Sig = append(info.Sig, sig)
 		case "CA":
 			if !info.CA.IsZero() {
 				return fmt.Errorf("line %d: duplicate CA", lineno)
@@ -389,11 +393,19 @@ func (info *NARInfo) MarshalText() ([]byte, error) {
 	}
 	for _, sig := range info.Sig {
 		buf = append(buf, "\nSig: "...)
-		buf = append(buf, sig...)
+		sigData, err := sig.MarshalText()
+		if err != nil {
+			return nil, fmt.Errorf("marshal narinfo: %v", err)
+		}
+		buf = append(buf, sigData...)
 	}
 	if !info.CA.IsZero() {
 		buf = append(buf, "\nCA: "...)
-		buf = append(buf, info.CA.String()...)
+		caData, err := info.CA.MarshalText()
+		if err != nil {
+			return nil, fmt.Errorf("marshal narinfo: %v", err)
+		}
+		buf = append(buf, caData...)
 	}
 	buf = append(buf, "\n"...)
 	return buf, nil
