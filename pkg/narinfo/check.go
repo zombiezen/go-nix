@@ -13,6 +13,8 @@ import (
 //     (references and deriver first need to be made absolute)
 //   - when no compression is present, ensuring File{Hash,Size} and
 //     Nar{Hash,Size} are equal
+//
+// Deprecated: Use [nix.NARInfo.IsValid].
 func (n *NarInfo) Check() error {
 	_, err := nixpath.FromString(n.StorePath)
 	if err != nil {

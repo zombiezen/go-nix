@@ -61,8 +61,7 @@ func TestSignature(t *testing.T) {
 
 func TestSignVerify(t *testing.T) {
 	//nolint:lll
-	strNarinfoSample := `
-StorePath: /nix/store/syd87l2rxw8cbsxmxl853h0r6pdwhwjr-curl-7.82.0-bin
+	const strNarinfoSample = `StorePath: /nix/store/syd87l2rxw8cbsxmxl853h0r6pdwhwjr-curl-7.82.0-bin
 URL: nar/05ra3y72i3qjri7xskf9qj8kb29r6naqy1sqpbs3azi3xcigmj56.nar.xz
 Compression: xz
 FileHash: sha256:05ra3y72i3qjri7xskf9qj8kb29r6naqy1sqpbs3azi3xcigmj56

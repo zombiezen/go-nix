@@ -1,14 +1,15 @@
 package narinfo
 
 import (
-	"bytes"
-	"fmt"
-
+	mh "github.com/multiformats/go-multihash/core"
+	"github.com/nix-community/go-nix/nix"
 	"github.com/nix-community/go-nix/pkg/hash"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 )
 
 // NarInfo represents a parsed .narinfo file.
+//
+// Deprecated: Use [nix.NARInfo].
 type NarInfo struct {
 	StorePath string // The full nix store path (/nix/store/…-pname-version)
 
@@ -41,55 +42,55 @@ type NarInfo struct {
 	CA string
 }
 
-func (n *NarInfo) String() string {
-	var buf bytes.Buffer
-
-	fmt.Fprintf(&buf, "StorePath: %v\n", n.StorePath)
-	fmt.Fprintf(&buf, "URL: %v\n", n.URL)
-	fmt.Fprintf(&buf, "Compression: %v\n", n.Compression)
-
-	if n.FileHash != nil && n.FileSize != 0 {
-		fmt.Fprintf(&buf, "FileHash: %v\n", n.FileHash.NixString())
-		fmt.Fprintf(&buf, "FileSize: %d\n", n.FileSize)
+func (n *NarInfo) toNew() *nix.NARInfo {
+	info := &nix.NARInfo{
+		StorePath:   n.StorePath,
+		URL:         n.URL,
+		Compression: nix.CompressionType(n.Compression),
+		FileHash:    toNewHash(n.FileHash),
+		FileSize:    int64(n.FileSize),
+		NARHash:     toNewHash(n.NarHash),
+		NARSize:     int64(n.NarSize),
+		System:      n.System,
+		Deriver:     nix.ObjectName(n.Deriver),
 	}
-
-	fmt.Fprintf(&buf, "NarHash: %v\n", n.NarHash.NixString())
-
-	fmt.Fprintf(&buf, "NarSize: %d\n", n.NarSize)
-
-	buf.WriteString("References:")
-
-	if len(n.References) == 0 {
-		buf.WriteByte(' ')
-	} else {
-		for _, r := range n.References {
-			buf.WriteByte(' ')
-			buf.WriteString(r)
-		}
+	for _, ref := range n.References {
+		info.References = append(info.References, nix.ObjectName(ref))
 	}
-
-	buf.WriteByte('\n')
-
-	if n.Deriver != "" {
-		fmt.Fprintf(&buf, "Deriver: %v\n", n.Deriver)
+	for _, sig := range n.Signatures {
+		info.Sig = append(info.Sig, sig.String())
 	}
-
-	if n.System != "" {
-		fmt.Fprintf(&buf, "System: %v\n", n.System)
-	}
-
-	for _, s := range n.Signatures {
-		fmt.Fprintf(&buf, "Sig: %v\n", s)
-	}
-
 	if n.CA != "" {
-		fmt.Fprintf(&buf, "CA: %v\n", n.CA)
+		info.CA, _ = nix.ParseContentAddress(n.CA)
 	}
+	return info
+}
 
-	return buf.String()
+func (n *NarInfo) String() string {
+	info := n.toNew()
+	buf, err := info.MarshalText()
+	if err != nil {
+		panic(err)
+	}
+	return string(buf)
 }
 
 // ContentType returns the mime content type of the object.
 func (n NarInfo) ContentType() string {
-	return "text/x-nix-narinfo"
+	return nix.NARInfoMIMEType
+}
+
+//nolint:gochecknoglobals
+var mhTypeToHashType = map[int]nix.HashType{
+	mh.MD5:      nix.MD5,
+	mh.SHA1:     nix.SHA1,
+	mh.SHA2_256: nix.SHA256,
+	mh.SHA2_512: nix.SHA512,
+}
+
+func toNewHash(h *hash.Hash) nix.Hash {
+	if h == nil {
+		return nix.Hash{}
+	}
+	return nix.NewHash(mhTypeToHashType[h.HashType], h.Digest())
 }
