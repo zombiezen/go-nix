@@ -1,4 +1,4 @@
 # Mark everything inside test/testdata as binary,
 # so git won't replace \n with \r\n on windows.
-test/testdata/* binary
+/**/testdata/* binary
 test/testdata/*.go binary diff
