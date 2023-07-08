@@ -5,6 +5,7 @@ go 1.19
 require (
 	github.com/alecthomas/kong v0.5.0
 	github.com/dgraph-io/badger/v3 v3.2103.2
+	github.com/google/go-cmp v0.5.4
 	github.com/multiformats/go-multihash v0.2.1
 	github.com/nsf/jsondiff v0.0.0-20210926074059-1e845ec5d249
 	github.com/stretchr/testify v1.7.0
