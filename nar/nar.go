@@ -18,7 +18,7 @@ type Header struct {
 	// Path is a UTF-8 encoded, unrooted, slash-separated sequence of path elements,
 	// like "x/y/z".
 	// Path will not contain elements that are "." or ".." or the empty string,
-	// except for the special case where an archive consists of a single file
+	// except for the special case where an archive that consists of a single file
 	// will use the empty string.
 	Path string
 	// Mode is the type of the file system object.
