@@ -78,8 +78,8 @@ func TestReader(t *testing.T) {
 			want: []entry{
 				{
 					header: &Header{
-						Mode:       fs.ModeSymlink | 0o777,
-						LinkTarget: "foo/bar/baz",
+						Mode:     fs.ModeSymlink | 0o777,
+						Linkname: "foo/bar/baz",
 					},
 				},
 			},

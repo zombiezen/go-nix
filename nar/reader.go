@@ -43,23 +43,6 @@ type Reader struct {
 	err error
 }
 
-// A Header represents a single header in a NAR archive.
-// Some fields may not be populated.
-type Header struct {
-	// Path is a UTF-8 encoded, unrooted, slash-separated sequence of path elements,
-	// like "x/y/z".
-	// Path will not contain elements that are "." or ".." or the empty string,
-	// except for the special case where an archive consists of a single file
-	// will use the empty string.
-	Path string
-	// Mode is the type of the file system object.
-	Mode fs.FileMode
-	// Size is the size of a regular file in bytes.
-	Size int64
-	// LinkTarget is the target of a symlink.
-	LinkTarget string
-}
-
 // NewReader creates a new [Reader] reading from r.
 func NewReader(r io.Reader) *Reader {
 	return &Reader{r: r}
@@ -274,7 +257,7 @@ func (r *Reader) node(hdr *Header) error {
 			return fmt.Errorf("symlink: %w", err)
 		}
 		var err error
-		hdr.LinkTarget, err = r.readString(symlinkTargetMaxLen)
+		hdr.Linkname, err = r.readString(symlinkTargetMaxLen)
 		if err != nil {
 			return fmt.Errorf("symlink target: %w", err)
 		}

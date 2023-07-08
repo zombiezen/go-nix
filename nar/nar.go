@@ -8,8 +8,29 @@ package nar
 
 import (
 	"fmt"
+	"io/fs"
 	"strings"
 )
+
+// A Header represents a single header in a NAR archive.
+// Some fields may not be populated.
+type Header struct {
+	// Path is a UTF-8 encoded, unrooted, slash-separated sequence of path elements,
+	// like "x/y/z".
+	// Path will not contain elements that are "." or ".." or the empty string,
+	// except for the special case where an archive consists of a single file
+	// will use the empty string.
+	Path string
+	// Mode is the type of the file system object.
+	// During writing, the permission bits are largely ignored
+	// except the executable bits for a regular file:
+	// if any are non-zero, then the file will be marked as executable.
+	Mode fs.FileMode
+	// Size is the size of a regular file in bytes.
+	Size int64
+	// Linkname is the target of a symlink.
+	Linkname string
+}
 
 // Tokens
 const (
