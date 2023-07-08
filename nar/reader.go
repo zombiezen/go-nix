@@ -25,7 +25,10 @@ const (
 // [Reader.Next] advances to the next file in the archive (including the first),
 // and then Reader can be treated as an [io.Reader] to access the file's data.
 type Reader struct {
-	r     io.Reader
+	r io.Reader
+	// buf is a temporary buffer used for reading.
+	// Its length is a multiple of stringAlign
+	// that is sufficient to hold any of the known tokens in the NAR format.
 	buf   [16]byte
 	state int8
 
@@ -53,15 +56,15 @@ func NewReader(r io.Reader) *Reader {
 // Any remaining data in the current file is automatically discarded.
 // At the end of the archive, Next returns the error [io.EOF].
 func (r *Reader) Next() (_ *Header, err error) {
+	if r.err != nil {
+		return nil, r.err
+	}
 	defer func() {
 		if err != nil && r.err == nil {
 			r.err = errInvalid
 		}
 	}()
 
-	if r.err != nil {
-		return nil, r.err
-	}
 	switch r.state {
 	case readerStateFirst:
 		if err := r.expect(magic); err != nil {
@@ -170,7 +173,7 @@ func (r *Reader) Next() (_ *Header, err error) {
 // It returns (0, io.EOF) when it reaches the end of that file,
 // until [Reader.Next] is called to advance to the next file.
 //
-// Calling Read on special types like [fs.ModeDir] or [fs.ModeSymlink]
+// Calling Read on special types like [fs.ModeDir] and [fs.ModeSymlink]
 // returns (0, io.EOF).
 func (r *Reader) Read(p []byte) (n int, err error) {
 	if r.state != readerStateFile || r.remaining <= 0 {

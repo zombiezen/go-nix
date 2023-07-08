@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+	"unicode/utf8"
 )
 
 // A Header represents a single header in a NAR archive.
@@ -18,8 +19,7 @@ type Header struct {
 	// Path is a UTF-8 encoded, unrooted, slash-separated sequence of path elements,
 	// like "x/y/z".
 	// Path will not contain elements that are "." or ".." or the empty string,
-	// except for the special case where an archive that consists of a single file
-	// will use the empty string.
+	// except for the special case that the root of the archive is the empty string.
 	Path string
 	// Mode is the type of the file system object.
 	// During writing, the permission bits are largely ignored
@@ -77,6 +77,9 @@ func validateFilename(name string) error {
 	}
 	if len(name) > entryNameMaxLen {
 		return fmt.Errorf("filename longer than %d characters", entryNameMaxLen)
+	}
+	if !utf8.ValidString(name) {
+		return fmt.Errorf("filename is not UTF-8")
 	}
 	if name == "." || name == ".." {
 		return fmt.Errorf("filename %q is reserved", name)
