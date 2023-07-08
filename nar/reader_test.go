@@ -1,6 +1,7 @@
 package nar
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"io/fs"
@@ -169,6 +170,33 @@ func TestReader(t *testing.T) {
 			t.Errorf("r.Next() = _, %v; want _, <!EOF>", err)
 		} else {
 			t.Logf("r.Next() = _, %v", err)
+		}
+	})
+}
+
+func FuzzReader(f *testing.F) {
+	listing, err := os.ReadDir("testdata")
+	if err != nil {
+		f.Fatal(err)
+	}
+	for _, ent := range listing {
+		if name := ent.Name(); strings.HasSuffix(name, ".nar") && !strings.HasPrefix(name, ".") {
+			data, err := os.ReadFile(filepath.Join("testdata", name))
+			if err != nil {
+				f.Fatal(err)
+			}
+			f.Add(data)
+		}
+	}
+
+	f.Fuzz(func(t *testing.T, in []byte) {
+		r := NewReader(bytes.NewReader(in))
+		for {
+			if _, err := r.Next(); err != nil {
+				t.Log("Stopped from error:", err)
+				return
+			}
+			io.Copy(io.Discard, r)
 		}
 	})
 }
