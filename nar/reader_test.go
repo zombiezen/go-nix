@@ -13,122 +13,125 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-func TestReader(t *testing.T) {
-	type entry struct {
-		header *Header
-		data   string
-	}
-	tests := []struct {
-		name     string
-		dataFile string
-		want     []entry
-	}{
-		{
-			name:     "EmptyFile",
-			dataFile: "empty-file.nar",
-			want: []entry{
-				{
-					header: &Header{
-						Mode: 0o444,
-						Size: 0,
-					},
-				},
-			},
-		},
-		{
-			name:     "EmptyDirectory",
-			dataFile: "empty-directory.nar",
-			want: []entry{
-				{
-					header: &Header{
-						Mode: 0o555 | fs.ModeDir,
-					},
-				},
-			},
-		},
-		{
-			name:     "TextFile",
-			dataFile: "hello-world.nar",
-			want: []entry{
-				{
-					header: &Header{
-						Mode: 0o444,
-						Size: 14,
-					},
-					data: "Hello, World!\n",
-				},
-			},
-		},
-		{
-			name:     "Script",
-			dataFile: "hello-script.nar",
-			want: []entry{
-				{
-					header: &Header{
-						Mode: 0o555,
-						Size: 31,
-					},
-					data: "#!/bin/sh\necho 'Hello, World!'\n",
-				},
-			},
-		},
-		{
-			name:     "Symlink",
-			dataFile: "symlink.nar",
-			want: []entry{
-				{
-					header: &Header{
-						Mode:     fs.ModeSymlink | 0o777,
-						Linkname: "foo/bar/baz",
-					},
-				},
-			},
-		},
-		{
-			name:     "Tree",
-			dataFile: "mini-drv.nar",
-			want: []entry{
-				{
-					header: &Header{
-						Mode: fs.ModeDir | 0o555,
-					},
-				},
-				{
-					header: &Header{
-						Path: "a.txt",
-						Mode: 0o444,
-						Size: 4,
-					},
-					data: "AAA\n",
-				},
-				{
-					header: &Header{
-						Path: "bin",
-						Mode: fs.ModeDir | 0o555,
-					},
-				},
-				{
-					header: &Header{
-						Path: "bin/hello.sh",
-						Mode: 0o555,
-						Size: 45,
-					},
-					data: "#!/bin/sh\n" +
-						`cat "$(dirname "$0")/../hello.txt"` + "\n",
-				},
-				{
-					header: &Header{
-						Path: "hello.txt",
-						Mode: 0o444,
-						Size: 14,
-					},
-					data: "Hello, World!\n",
-				},
-			},
-		},
-	}
+type testEntry struct {
+	header *Header
+	data   string
+}
 
-	for _, test := range tests {
+const helloScriptData = "#!/bin/sh\n" +
+	`cat "$(dirname "$0")/../hello.txt"` + "\n"
+
+var narTests = []struct {
+	name     string
+	dataFile string
+	want     []testEntry
+}{
+	{
+		name:     "EmptyFile",
+		dataFile: "empty-file.nar",
+		want: []testEntry{
+			{
+				header: &Header{
+					Mode: 0o444,
+					Size: 0,
+				},
+			},
+		},
+	},
+	{
+		name:     "EmptyDirectory",
+		dataFile: "empty-directory.nar",
+		want: []testEntry{
+			{
+				header: &Header{
+					Mode: 0o555 | fs.ModeDir,
+				},
+			},
+		},
+	},
+	{
+		name:     "TextFile",
+		dataFile: "hello-world.nar",
+		want: []testEntry{
+			{
+				header: &Header{
+					Mode: 0o444,
+					Size: 14,
+				},
+				data: "Hello, World!\n",
+			},
+		},
+	},
+	{
+		name:     "Script",
+		dataFile: "hello-script.nar",
+		want: []testEntry{
+			{
+				header: &Header{
+					Mode: 0o555,
+					Size: 31,
+				},
+				data: "#!/bin/sh\necho 'Hello, World!'\n",
+			},
+		},
+	},
+	{
+		name:     "Symlink",
+		dataFile: "symlink.nar",
+		want: []testEntry{
+			{
+				header: &Header{
+					Mode:     fs.ModeSymlink | 0o777,
+					Linkname: "foo/bar/baz",
+				},
+			},
+		},
+	},
+	{
+		name:     "Tree",
+		dataFile: "mini-drv.nar",
+		want: []testEntry{
+			{
+				header: &Header{
+					Mode: fs.ModeDir | 0o555,
+				},
+			},
+			{
+				header: &Header{
+					Path: "a.txt",
+					Mode: 0o444,
+					Size: 4,
+				},
+				data: "AAA\n",
+			},
+			{
+				header: &Header{
+					Path: "bin",
+					Mode: fs.ModeDir | 0o555,
+				},
+			},
+			{
+				header: &Header{
+					Path: "bin/hello.sh",
+					Mode: 0o555,
+					Size: int64(len(helloScriptData)),
+				},
+				data: helloScriptData,
+			},
+			{
+				header: &Header{
+					Path: "hello.txt",
+					Mode: 0o444,
+					Size: 14,
+				},
+				data: "Hello, World!\n",
+			},
+		},
+	},
+}
+
+func TestReader(t *testing.T) {
+	for _, test := range narTests {
 		t.Run(test.name, func(t *testing.T) {
 			f, err := os.Open(filepath.Join("testdata", test.dataFile))
 			if err != nil {
@@ -172,6 +175,31 @@ func TestReader(t *testing.T) {
 			t.Logf("r.Next() = _, %v", err)
 		}
 	})
+}
+
+func BenchmarkReader(b *testing.B) {
+	data, err := os.ReadFile(filepath.Join("testdata", "mini-drv.nar"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	r := bytes.NewReader(nil)
+	b.SetBytes(int64(len(data)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		r.Reset(data)
+		nr := NewReader(r)
+		for {
+			if _, err := nr.Next(); err == io.EOF {
+				break
+			} else if err != nil {
+				b.Fatal(err)
+			}
+			if _, err := io.Copy(io.Discard, nr); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
 }
 
 func FuzzReader(f *testing.F) {

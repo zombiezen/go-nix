@@ -37,11 +37,11 @@ type Writer struct {
 	// It is larger than Reader's buffer because we use it to write names.
 	buf [64]byte
 
-	state     int8
-	hasRoot   bool
-	padding   int8
-	remaining int64
-	lastPath  string
+	state       int8
+	lastPathDir bool
+	padding     int8
+	remaining   int64
+	lastPath    string
 }
 
 // NewWriter returns a new [Writer] writing to w.
@@ -72,6 +72,14 @@ func (nw *Writer) WriteHeader(hdr *Header) (err error) {
 		nw.state = writerStateRoot
 		fallthrough
 	case writerStateRoot:
+		if hdr.Path != "" {
+			nw.write("(")
+			nw.write(typeToken)
+			nw.write(typeDirectory)
+			nw.lastPath = ""
+			nw.lastPathDir = true
+		}
+
 		if err := nw.node(hdr); err != nil {
 			return err
 		}
@@ -80,8 +88,26 @@ func (nw *Writer) WriteHeader(hdr *Header) (err error) {
 			return nil
 		}
 	case writerStateFile:
+		if nw.lastPath == "" {
+			return fmt.Errorf("nar: archive root is a file")
+		}
+		if nw.remaining > 0 {
+			return fmt.Errorf("nar: %d bytes remaining on %s", nw.remaining, formatLastPath(nw.lastPath))
+		}
+		if err := nw.finishFile(); err != nil {
+			return err
+		}
+		nw.write(")") // finish directory entry
+
+		if err := nw.node(hdr); err != nil {
+			return err
+		}
 	case writerStateSpecial:
+		if err := nw.node(hdr); err != nil {
+			return err
+		}
 	case writerStateEnd:
+		return fmt.Errorf("nar: root file system object already written")
 	default:
 		panic("unreachable")
 	}
@@ -89,12 +115,45 @@ func (nw *Writer) WriteHeader(hdr *Header) (err error) {
 }
 
 func (nw *Writer) node(hdr *Header) error {
+	if hdr.Mode.IsRegular() && hdr.Size < 0 {
+		return fmt.Errorf("nar: %s: negative size", hdr.Path)
+	}
+
+	pop, newDirs, err := treeDelta(nw.lastPath, nw.lastPathDir, hdr.Path)
+	if err != nil {
+		return err
+	}
+	for i := 0; i < pop; i++ {
+		nw.write(")") // directory
+		nw.write(")") // parent's entry
+	}
+	for newDirs != "" {
+		name := firstPathComponent(newDirs)
+		nw.write(entryToken)
+		nw.write("(")
+		nw.write(nameToken)
+		nw.write(name)
+		nw.write(nodeToken)
+		nw.write("(")
+		nw.write(typeToken)
+		nw.write(typeDirectory)
+
+		newDirs = newDirs[len(name):]
+		if len(newDirs) >= len("/") {
+			newDirs = newDirs[len("/"):]
+		}
+	}
+	if hdr.Path != "" {
+		name := slashpath.Base(hdr.Path)
+		nw.write(entryToken)
+		nw.write("(")
+		nw.write(nameToken)
+		nw.write(name)
+		nw.write(nodeToken)
+	}
 
 	switch hdr.Mode.Type() {
 	case 0: // regular
-		if hdr.Size < 0 {
-			return fmt.Errorf("nar: %s: negative size", hdr.Path)
-		}
 		nw.write("(")
 		nw.write(typeToken)
 		nw.write(typeRegular)
@@ -103,6 +162,7 @@ func (nw *Writer) node(hdr *Header) error {
 			nw.write("")
 		}
 		nw.write(contentsToken)
+		nw.writeInt(uint64(hdr.Size))
 		nw.state = writerStateFile
 		nw.remaining = hdr.Size
 		nw.padding = int8(stringPaddingLength(int(hdr.Size % stringAlign)))
@@ -118,10 +178,15 @@ func (nw *Writer) node(hdr *Header) error {
 		nw.write(targetToken)
 		nw.write(hdr.Linkname)
 		nw.write(")")
+		if hdr.Path != "" {
+			nw.write(")")
+		}
 		nw.state = writerStateSpecial
 	default:
 		return fmt.Errorf("nar: %s: cannot support mode %v", hdr.Path, hdr.Mode)
 	}
+	nw.lastPath = hdr.Path
+	nw.lastPathDir = hdr.Mode.IsDir()
 	return nw.err
 }
 
@@ -135,14 +200,62 @@ func (nw *Writer) Write(p []byte) (n int, err error) {
 	if nw.state != writerStateFile || nw.remaining <= 0 {
 		return 0, ErrWriteTooLong
 	}
-	return 0, errors.New("TODO(now)")
+	if nw.err != nil {
+		return 0, nw.err
+	}
+	tooLong := len(p) > int(nw.remaining)
+	if tooLong {
+		p = p[:nw.remaining]
+	}
+	if len(p) > 0 {
+		n, err = nw.w.Write(p)
+		if err == nil && tooLong {
+			err = ErrWriteTooLong
+		}
+	}
+	nw.remaining -= int64(n)
+	return n, err
 }
 
-// Close closes the NAR archive by writing the footer.
+// Close writes the footer of the NAR archive.
 // If the current file (from a prior call to [Writer.WriteHeader])
 // is not fully written, then Close returns an error.
 func (nw *Writer) Close() error {
-	return errors.New("TODO(now)")
+	if nw.err != nil {
+		return nw.err
+	}
+	switch nw.state {
+	case writerStateInit, writerStateRoot:
+		return fmt.Errorf("nar: close: no object written")
+	case writerStateFile:
+		if nw.remaining > 0 {
+			return fmt.Errorf("nar: close: %d bytes remaining on %s", nw.remaining, formatLastPath(nw.lastPath))
+		}
+		nw.finishFile()
+		if nw.lastPath != "" {
+			nw.write(")") // finish directory entry
+		}
+	case writerStateEnd:
+		nw.err = errors.New("nar: writer closed")
+		return nil
+	}
+
+	pop := strings.Count(nw.lastPath, "/")
+	if nw.lastPath != "" {
+		pop++
+	}
+	if nw.lastPathDir {
+		pop++
+	}
+	for i := 0; i < pop; i++ {
+		nw.write(")")
+	}
+
+	prevErr := nw.err
+	if nw.err == nil {
+		nw.err = errors.New("nar: writer closed")
+	}
+	return prevErr
 }
 
 func (nw *Writer) writeInt(x uint64) {
@@ -150,7 +263,7 @@ func (nw *Writer) writeInt(x uint64) {
 		return
 	}
 	binary.LittleEndian.PutUint64(nw.buf[:8], x)
-	_, err := nw.Write(nw.buf[:8])
+	_, err := nw.w.Write(nw.buf[:8])
 	if err != nil {
 		nw.err = fmt.Errorf("nar: %w", err)
 	}
@@ -205,24 +318,67 @@ func (nw *Writer) write(s string) {
 	}
 }
 
+func (nw *Writer) finishFile() error {
+	if nw.err != nil {
+		return nw.err
+	}
+	if nw.padding > 0 {
+		for i := int8(0); i < nw.padding; i++ {
+			nw.buf[i] = 0
+		}
+		if _, err := nw.w.Write(nw.buf[:nw.padding]); err != nil {
+			nw.err = fmt.Errorf("nar: %w", err)
+		}
+	}
+	nw.write(")")
+	return nw.err
+}
+
 // treeDelta computes the directory ends (pops) and/or new directories to be created
 // in order to advance from one path to another.
 func treeDelta(oldPath string, oldIsDir bool, newPath string) (pop int, newDirs string, err error) {
-	oldParent, oldName := slashpath.Split(oldPath)
-	newParent, newName := slashpath.Split(newPath)
-	if newParent == oldParent {
-		if newName <= oldName {
-			return 0, "", fmt.Errorf("%s is not ordered after %s", newName, oldName)
+	newParent, _ := slashpath.Split(newPath)
+	if shared := oldPath + "/"; strings.HasPrefix(newPath, shared) {
+		if !oldIsDir {
+			return 0, "", fmt.Errorf("%s is not a directory", formatLastPath(oldPath))
 		}
-		return 0, "", nil
+		newDirs = strings.TrimSuffix(newParent[len(shared):], "/")
+		return pop, strings.TrimSuffix(newDirs, "/"), nil
 	}
+
+	oldParent, _ := slashpath.Split(oldPath)
 	shared := oldParent
 	for ; !strings.HasPrefix(newParent, shared); pop++ {
-		shared, _ = slashpath.Split(shared)
+		shared, _ = slashpath.Split(strings.TrimSuffix(shared, "/"))
 	}
-	newDirs = newParent[len(shared):]
-	// TODO(now): More ordering checks
+
+	if oldPath != "" && newPath != "" {
+		newName := firstPathComponent(newPath[len(shared):])
+		oldName := firstPathComponent(oldPath[len(shared):])
+		if newName <= oldName {
+			return 0, "", fmt.Errorf("%s is not ordered after %s",
+				formatLastPath(newPath[:len(shared)+len(newName)]),
+				formatLastPath(oldPath[:len(shared)+len(oldName)]))
+		}
+	}
+
+	newDirs = strings.TrimSuffix(newParent[len(shared):], "/")
 	return pop, newDirs, nil
+}
+
+func firstPathComponent(path string) string {
+	i := strings.IndexByte(path, '/')
+	if i == -1 {
+		return path
+	}
+	return path[:i]
+}
+
+func formatLastPath(s string) string {
+	if s == "" {
+		return "<root filesystem object>"
+	}
+	return s
 }
 
 func validatePath(path string) error {
@@ -240,5 +396,6 @@ func validatePath(path string) error {
 		if elemEnd == len(path) {
 			return nil
 		}
+		path = path[elemEnd+1:]
 	}
 }

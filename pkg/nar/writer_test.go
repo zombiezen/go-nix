@@ -331,3 +331,82 @@ func TestWriterErrorsTransitions(t *testing.T) {
 		assert.NoError(t, err)
 	})
 }
+
+const helloScriptData = "#!/bin/sh\n" +
+	`cat "$(dirname "$0")/../hello.txt"` + "\n"
+
+func BenchmarkWriter(b *testing.B) {
+	buf := new(bytes.Buffer)
+
+	// First iteration is a warmup. See below.
+	for i := 0; i < b.N+1; i++ {
+		buf.Reset()
+		w, err := nar.NewWriter(buf)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		err = w.WriteHeader(&nar.Header{
+			Path: "/",
+			Type: nar.TypeDirectory,
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		err = w.WriteHeader(&nar.Header{
+			Path: "/a.txt",
+			Type: nar.TypeRegular,
+			Size: 4,
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := io.WriteString(w, "AAA\n"); err != nil {
+			b.Fatal(err)
+		}
+
+		err = w.WriteHeader(&nar.Header{
+			Path: "/bin",
+			Type: nar.TypeDirectory,
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		err = w.WriteHeader(&nar.Header{
+			Path:       "/bin/hello.sh",
+			Type:       nar.TypeRegular,
+			Executable: true,
+			Size:       int64(len(helloScriptData)),
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := io.WriteString(w, helloScriptData); err != nil {
+			b.Fatal(err)
+		}
+
+		err = w.WriteHeader(&nar.Header{
+			Path: "/hello.txt",
+			Type: nar.TypeRegular,
+			Size: 14,
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := io.WriteString(w, "Hello, World!\n"); err != nil {
+			b.Fatal(err)
+		}
+
+		if err := w.Close(); err != nil {
+			b.Fatal(err)
+		}
+
+		if i == 0 {
+			// First iteration we're finding the buffer size.
+			b.SetBytes(int64(buf.Len()))
+			b.ResetTimer()
+		}
+	}
+}

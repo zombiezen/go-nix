@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/nix-community/go-nix/pkg/nar"
@@ -364,4 +365,32 @@ func TestReaderSmoketest(t *testing.T) {
 	assert.NotPanics(t, func() {
 		_ = nr.Close()
 	}, "closing the reader multiple times shouldn't panic")
+}
+
+func BenchmarkReader(b *testing.B) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "nar", "testdata", "mini-drv.nar"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	r := bytes.NewReader(nil)
+	b.SetBytes(int64(len(data)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		r.Reset(data)
+		nr, err := nar.NewReader(r)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for {
+			if _, err := nr.Next(); err == io.EOF {
+				break
+			} else if err != nil {
+				b.Fatal(err)
+			}
+			if _, err := io.Copy(io.Discard, nr); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
 }
