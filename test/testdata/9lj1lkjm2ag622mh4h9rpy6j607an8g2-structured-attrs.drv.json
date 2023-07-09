@@ -8,6 +8,7 @@
     },
     "inputDrvs": {},
     "inputSrcs": [],
+    "name": "structured-attrs",
     "outputs": {
       "out": {
         "path": "/nix/store/6a39dl014j57bqka7qx25k0vb20vkqm6-structured-attrs"

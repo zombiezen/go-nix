@@ -12,6 +12,7 @@
     },
     "inputDrvs": {},
     "inputSrcs": [],
+    "name": "has-multi-out",
     "outputs": {
       "lib": {
         "path": "/nix/store/2vixb94v0hy2xc6p7mbnxxcyc095yyia-has-multi-out-lib"

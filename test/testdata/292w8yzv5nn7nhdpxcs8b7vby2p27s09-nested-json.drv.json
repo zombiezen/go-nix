@@ -11,6 +11,7 @@
     },
     "inputDrvs": {},
     "inputSrcs": [],
+    "name": "nested-json",
     "outputs": {
       "out": {
         "path": "/nix/store/pzr7lsd3q9pqsnb42r9b23jc5sh8irvn-nested-json"

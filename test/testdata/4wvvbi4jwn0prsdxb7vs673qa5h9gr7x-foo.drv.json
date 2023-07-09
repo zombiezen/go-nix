@@ -15,6 +15,7 @@
       ]
     },
     "inputSrcs": [],
+    "name": "foo",
     "outputs": {
       "out": {
         "path": "/nix/store/5vyvcwah9l9kf07d52rcgdk70g2f4y13-foo"

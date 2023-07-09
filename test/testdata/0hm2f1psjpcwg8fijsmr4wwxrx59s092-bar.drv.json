@@ -13,6 +13,7 @@
     },
     "inputDrvs": {},
     "inputSrcs": [],
+    "name": "bar",
     "outputs": {
       "out": {
         "hash": "08813cbee9903c62be4c5027726a418a300da4500b2d369d3af9286f4815ceba",

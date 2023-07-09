@@ -10,8 +10,6 @@ jobs:
   fixtures:
     name: fixtures-up-to-date
     runs-on: ubuntu-latest
-    # This job appears to be non-deterministic.
-    continue-on-error: true
     steps:
     - uses: actions/checkout@v3
     - uses: cachix/install-nix-action@v22
