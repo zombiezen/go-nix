@@ -4,364 +4,460 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/nix-community/go-nix/pkg/nar"
-	"github.com/stretchr/testify/assert"
+	"github.com/google/go-cmp/cmp"
+	. "github.com/nix-community/go-nix/pkg/nar"
 )
 
-func TestReaderEmpty(t *testing.T) {
-	nr, err := nar.NewReader(bytes.NewBuffer(genEmptyNar()))
-	assert.NoError(t, err)
-
-	hdr, err := nr.Next()
-	// first Next() should return an non-nil error that's != io.EOF,
-	// as an empty NAR is invalid.
-	assert.Error(t, err, "first Next() on an empty NAR should return an error")
-	assert.NotEqual(t, io.EOF, err, "first Next() on an empty NAR shouldn't return io.EOF")
-	assert.Nil(t, hdr, "returned header should be nil")
-
-	assert.NotPanics(t, func() {
-		nr.Close()
-	}, "closing the reader shouldn't panic")
+type testEntry struct {
+	header *Header
+	data   string
 }
 
-func TestReaderEmptyDirectory(t *testing.T) {
-	nr, err := nar.NewReader(bytes.NewBuffer(genEmptyDirectoryNar()))
-	assert.NoError(t, err)
+const helloWorld = "Hello, World!\n"
 
-	// get first header
-	hdr, err := nr.Next()
-	assert.NoError(t, err)
-	assert.Equal(t, &nar.Header{
-		Path: "/",
-		Type: nar.TypeDirectory,
-	}, hdr)
+const helloWorldScriptData = "#!/bin/sh\necho 'Hello, World!'\n"
 
-	hdr, err = nr.Next()
-	assert.Equal(t, io.EOF, err, "Next() should return io.EOF as error")
-	assert.Nil(t, hdr, "returned header should be nil")
+const miniDRVScriptData = "#!/bin/sh\n" +
+	`cat "$(dirname "$0")/../hello.txt"` + "\n"
 
-	assert.NotPanics(t, func() {
-		nr.Close()
-	}, "closing the reader shouldn't panic")
+var narTests = []struct {
+	name           string
+	dataFile       string
+	want           []testEntry
+	ignoreContents bool
+	err            bool
+}{
+	{
+		name:     "EmptyFile",
+		dataFile: "empty-file.nar",
+		want: []testEntry{
+			{
+				header: &Header{
+					Type: TypeRegular,
+					Path: "/",
+					Size: 0,
+				},
+			},
+		},
+	},
+	{
+		name:     "OneByteFile",
+		dataFile: "1byte-regular.nar",
+		want: []testEntry{
+			{
+				header: &Header{
+					Type: TypeRegular,
+					Path: "/",
+					Size: 1,
+				},
+				data: "\x01",
+			},
+		},
+	},
+	{
+		name:     "EmptyDirectory",
+		dataFile: "empty-directory.nar",
+		want: []testEntry{
+			{
+				header: &Header{
+					Type: TypeDirectory,
+					Path: "/",
+				},
+			},
+		},
+	},
+	{
+		name:     "TextFile",
+		dataFile: "hello-world.nar",
+		want: []testEntry{
+			{
+				header: &Header{
+					Type: TypeRegular,
+					Path: "/",
+					Size: int64(len(helloWorld)),
+				},
+				data: helloWorld,
+			},
+		},
+	},
+	{
+		name:     "Script",
+		dataFile: "hello-script.nar",
+		want: []testEntry{
+			{
+				header: &Header{
+					Type:       TypeRegular,
+					Path:       "/",
+					Executable: true,
+					Size:       int64(len(helloWorldScriptData)),
+				},
+				data: helloWorldScriptData,
+			},
+		},
+	},
+	{
+		name:     "Symlink",
+		dataFile: "symlink.nar",
+		want: []testEntry{
+			{
+				header: &Header{
+					Type:       TypeSymlink,
+					Path:       "/",
+					LinkTarget: "/nix/store/somewhereelse",
+				},
+			},
+		},
+	},
+	{
+		name:     "Tree",
+		dataFile: "mini-drv.nar",
+		want: []testEntry{
+			{
+				header: &Header{
+					Type: TypeDirectory,
+					Path: "/",
+				},
+			},
+			{
+				header: &Header{
+					Type: TypeRegular,
+					Path: "/a.txt",
+					Size: 4,
+				},
+				data: "AAA\n",
+			},
+			{
+				header: &Header{
+					Type: TypeDirectory,
+					Path: "/bin",
+				},
+			},
+			{
+				header: &Header{
+					Type:       TypeRegular,
+					Path:       "/bin/hello.sh",
+					Executable: true,
+					Size:       int64(len(miniDRVScriptData)),
+				},
+				data: miniDRVScriptData,
+			},
+			{
+				header: &Header{
+					Type: TypeRegular,
+					Path: "/hello.txt",
+					Size: int64(len(helloWorld)),
+				},
+				data: helloWorld,
+			},
+		},
+	},
+	{
+		name:           "SmokeTest",
+		dataFile:       "nar_1094wph9z4nwlgvsd53abfz8i117ykiv5dwnq9nnhz846s7xqd7d.nar",
+		ignoreContents: true,
+		want: []testEntry{
+			{header: &Header{Type: TypeDirectory, Path: "/"}},
+			{header: &Header{Type: TypeDirectory, Path: "/bin"}},
+			{header: &Header{
+				Type:       TypeRegular,
+				Path:       "/bin/arp",
+				Executable: true,
+				Size:       55288,
+			}},
+			{header: &Header{
+				Type:       TypeSymlink,
+				Path:       "/bin/dnsdomainname",
+				LinkTarget: "hostname",
+			}},
+			{header: &Header{
+				Type:       TypeSymlink,
+				Path:       "/bin/domainname",
+				LinkTarget: "hostname",
+			}},
+			{header: &Header{
+				Type:       TypeRegular,
+				Path:       "/bin/hostname",
+				Executable: true,
+				Size:       17704,
+			}},
+			{header: &Header{
+				Type:       TypeRegular,
+				Path:       "/bin/ifconfig",
+				Executable: true,
+				Size:       72576,
+			}},
+			{header: &Header{
+				Type:       TypeRegular,
+				Path:       "/bin/nameif",
+				Executable: true,
+				Size:       18776,
+			}},
+			{header: &Header{
+				Type:       TypeRegular,
+				Path:       "/bin/netstat",
+				Executable: true,
+				Size:       131784,
+			}},
+			{header: &Header{
+				Type:       TypeSymlink,
+				Path:       "/bin/nisdomainname",
+				LinkTarget: "hostname",
+			}},
+			{header: &Header{
+				Type:       TypeRegular,
+				Path:       "/bin/plipconfig",
+				Executable: true,
+				Size:       13160,
+			}},
+			{header: &Header{
+				Type:       TypeRegular,
+				Path:       "/bin/rarp",
+				Executable: true,
+				Size:       30384,
+			}},
+			{header: &Header{
+				Type:       TypeRegular,
+				Path:       "/bin/route",
+				Executable: true,
+				Size:       61928,
+			}},
+			{header: &Header{
+				Type:       TypeRegular,
+				Path:       "/bin/slattach",
+				Executable: true,
+				Size:       35672,
+			}},
+			{header: &Header{
+				Type:       TypeSymlink,
+				Path:       "/bin/ypdomainname",
+				LinkTarget: "hostname",
+			}},
+			{header: &Header{
+				Type:       TypeSymlink,
+				Path:       "/sbin",
+				LinkTarget: "bin",
+			}},
+			{header: &Header{
+				Type: TypeDirectory,
+				Path: "/share",
+			}},
+			{header: &Header{
+				Type: TypeDirectory,
+				Path: "/share/man",
+			}},
+			{header: &Header{
+				Type: TypeDirectory,
+				Path: "/share/man/man1",
+			}},
+			{header: &Header{
+				Type: TypeRegular,
+				Path: "/share/man/man1/dnsdomainname.1.gz",
+				Size: 40,
+			}},
+			{header: &Header{
+				Type: TypeRegular,
+				Path: "/share/man/man1/domainname.1.gz",
+				Size: 40,
+			}},
+			{header: &Header{
+				Type: TypeRegular,
+				Path: "/share/man/man1/hostname.1.gz",
+				Size: 1660,
+			}},
+			{header: &Header{
+				Type: TypeRegular,
+				Path: "/share/man/man1/nisdomainname.1.gz",
+				Size: 40,
+			}},
+			{header: &Header{
+				Type: TypeRegular,
+				Path: "/share/man/man1/ypdomainname.1.gz",
+				Size: 40,
+			}},
+			{header: &Header{
+				Type: TypeDirectory,
+				Path: "/share/man/man5",
+			}},
+			{header: &Header{
+				Type: TypeRegular,
+				Path: "/share/man/man5/ethers.5.gz",
+				Size: 563,
+			}},
+			{header: &Header{
+				Type: TypeDirectory,
+				Path: "/share/man/man8",
+			}},
+			{header: &Header{
+				Type: TypeRegular,
+				Path: "/share/man/man8/arp.8.gz",
+				Size: 2464,
+			}},
+			{header: &Header{
+				Type: TypeRegular,
+				Path: "/share/man/man8/ifconfig.8.gz",
+				Size: 3382,
+			}},
+			{header: &Header{
+				Type: TypeRegular,
+				Path: "/share/man/man8/nameif.8.gz",
+				Size: 523,
+			}},
+			{header: &Header{
+				Type: TypeRegular,
+				Path: "/share/man/man8/netstat.8.gz",
+				Size: 4284,
+			}},
+			{header: &Header{
+				Type: TypeRegular,
+				Path: "/share/man/man8/plipconfig.8.gz",
+				Size: 889,
+			}},
+			{header: &Header{
+				Type: TypeRegular,
+				Path: "/share/man/man8/rarp.8.gz",
+				Size: 1198,
+			}},
+			{header: &Header{
+				Type: TypeRegular,
+				Path: "/share/man/man8/route.8.gz",
+				Size: 3525,
+			}},
+			{header: &Header{
+				Type: TypeRegular,
+				Path: "/share/man/man8/slattach.8.gz",
+				Size: 1441,
+			}},
+		},
+	},
+	{
+		name:     "OnlyMagic",
+		dataFile: "only-magic.nar",
+		err:      true,
+	},
+	{
+		name:     "InvalidOrder",
+		dataFile: "invalid-order.nar",
+		want: []testEntry{
+			{
+				header: &Header{
+					Type: TypeDirectory,
+					Path: "/",
+				},
+			},
+			{
+				header: &Header{
+					Type: TypeDirectory,
+					Path: "/b",
+				},
+			},
+		},
+		err: true,
+	},
 }
 
-func TestReaderOneByteRegular(t *testing.T) {
-	nr, err := nar.NewReader(bytes.NewBuffer(genOneByteRegularNar()))
-	assert.NoError(t, err)
+func TestReader(t *testing.T) {
+	for _, test := range narTests {
+		t.Run(test.name, func(t *testing.T) {
+			f, err := os.Open(filepath.Join("testdata", test.dataFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			r, err := NewReader(f)
+			switch {
+			case err != nil && (!test.err || len(test.want) > 0):
+				t.Fatal("NewReader:", err)
+			case err != nil && test.err && len(test.want) == 0:
+				t.Log("NewReader:", err)
+				return
+			}
 
-	// get first header
-	hdr, err := nr.Next()
-	assert.NoError(t, err)
-	assert.Equal(t, &nar.Header{
-		Path:       "/",
-		Type:       nar.TypeRegular,
-		Size:       1,
-		Executable: false,
-	}, hdr)
+			for i := range test.want {
+				gotHeader, err := r.Next()
+				if err != nil {
+					t.Fatalf("r.Next() #%d: %v", i+1, err)
+				}
+				if diff := cmp.Diff(test.want[i].header, gotHeader); diff != "" {
+					t.Errorf("header #%d (-want +got):\n%s", i+1, diff)
+				}
+				if !test.ignoreContents {
+					if got, err := io.ReadAll(r); string(got) != test.want[i].data || err != nil {
+						t.Errorf("io.ReadAll(r) #%d = %q, %v; want %q, <nil>", i+1, got, err, test.want[i].data)
+					}
+				}
+			}
 
-	// read contents
-	contents, err := io.ReadAll(nr)
-	assert.NoError(t, err)
-	assert.Equal(t, []byte{0x1}, contents)
-
-	hdr, err = nr.Next()
-	assert.Equal(t, io.EOF, err, "Next() should return io.EOF as error")
-	assert.Nil(t, hdr, "returned header should be nil")
-
-	assert.NotPanics(t, func() {
-		nr.Close()
-	}, "closing the reader shouldn't panic")
+			got, err := r.Next()
+			if err == nil || !test.err && err != io.EOF || test.err && err == io.EOF {
+				errString := io.EOF.Error()
+				if test.err {
+					errString = "<non-EOF error>"
+				}
+				t.Errorf("r.Next() #%d = %+v, %v; want _, %s", len(test.want), got, err, errString)
+			}
+		})
+	}
 }
 
-func TestReaderSymlink(t *testing.T) {
-	nr, err := nar.NewReader(bytes.NewBuffer(genSymlinkNar()))
-	assert.NoError(t, err)
+func BenchmarkReader(b *testing.B) {
+	data, err := os.ReadFile(filepath.Join("testdata", "nar_1094wph9z4nwlgvsd53abfz8i117ykiv5dwnq9nnhz846s7xqd7d.nar"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	r := bytes.NewReader(nil)
+	b.SetBytes(int64(len(data)))
+	b.ResetTimer()
 
-	// get first header
-	hdr, err := nr.Next()
-	assert.NoError(t, err)
-	assert.Equal(t, &nar.Header{
-		Path:       "/",
-		Type:       nar.TypeSymlink,
-		LinkTarget: "/nix/store/somewhereelse",
-		Size:       0,
-		Executable: false,
-	}, hdr)
-
-	// read contents should only return an empty byte slice
-	contents, err := io.ReadAll(nr)
-	assert.NoError(t, err)
-	assert.Equal(t, []byte{}, contents)
-
-	hdr, err = nr.Next()
-	assert.Equal(t, io.EOF, err, "Next() should return io.EOF as error")
-	assert.Nil(t, hdr, "returned header should be nil")
-
-	assert.NotPanics(t, func() {
-		nr.Close()
-	}, "closing the reader shouldn't panic")
+	for i := 0; i < b.N; i++ {
+		r.Reset(data)
+		nr, err := NewReader(r)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for {
+			if _, err := nr.Next(); err == io.EOF {
+				break
+			} else if err != nil {
+				b.Fatal(err)
+			}
+			if _, err := io.Copy(io.Discard, nr); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
 }
 
-// TODO: various early close cases
-
-func TestReaderInvalidOrder(t *testing.T) {
-	nr, err := nar.NewReader(bytes.NewBuffer(genInvalidOrderNAR()))
-	assert.NoError(t, err)
-
-	// get first header (/)
-	hdr, err := nr.Next()
-	assert.NoError(t, err)
-	assert.Equal(t, &nar.Header{
-		Path: "/",
-		Type: nar.TypeDirectory,
-	}, hdr)
-
-	// get first element inside / (/b)
-	hdr, err = nr.Next()
-	assert.NoError(t, err)
-	assert.Equal(t, &nar.Header{
-		Path: "/b",
-		Type: nar.TypeDirectory,
-	}, hdr)
-
-	// get second element inside / (/a) should fail
-	_, err = nr.Next()
-	assert.Error(t, err)
-	assert.NotErrorIs(t, err, io.EOF, "should not be io.EOF")
-}
-
-func TestReaderSmoketest(t *testing.T) {
-	f, err := os.Open("../../test/testdata/nar_1094wph9z4nwlgvsd53abfz8i117ykiv5dwnq9nnhz846s7xqd7d.nar")
-	if !assert.NoError(t, err) {
-		return
+func FuzzReader(f *testing.F) {
+	listing, err := os.ReadDir("testdata")
+	if err != nil {
+		f.Fatal(err)
+	}
+	for _, ent := range listing {
+		if name := ent.Name(); strings.HasSuffix(name, ".nar") && !strings.HasPrefix(name, ".") {
+			data, err := os.ReadFile(filepath.Join("testdata", name))
+			if err != nil {
+				f.Fatal(err)
+			}
+			f.Add(data)
+		}
 	}
 
-	nr, err := nar.NewReader(f)
-	assert.NoError(t, err, "instantiating the NAR Reader shouldn't error")
-
-	// check premature reading doesn't do any harm
-	n, err := nr.Read(make([]byte, 1000))
-	assert.Equal(t, 0, n)
-	assert.Equal(t, io.EOF, err)
-
-	headers := []nar.Header{
-		{Type: nar.TypeDirectory, Path: "/"},
-		{Type: nar.TypeDirectory, Path: "/bin"},
-		{
-			Type:       nar.TypeRegular,
-			Path:       "/bin/arp",
-			Executable: true,
-			Size:       55288,
-		},
-		{
-			Type:       nar.TypeSymlink,
-			Path:       "/bin/dnsdomainname",
-			LinkTarget: "hostname",
-		},
-		{
-			Type:       nar.TypeSymlink,
-			Path:       "/bin/domainname",
-			LinkTarget: "hostname",
-		},
-		{
-			Type:       nar.TypeRegular,
-			Path:       "/bin/hostname",
-			Executable: true,
-			Size:       17704,
-		},
-		{
-			Type:       nar.TypeRegular,
-			Path:       "/bin/ifconfig",
-			Executable: true,
-			Size:       72576,
-		},
-		{
-			Type:       nar.TypeRegular,
-			Path:       "/bin/nameif",
-			Executable: true,
-			Size:       18776,
-		},
-		{
-			Type:       nar.TypeRegular,
-			Path:       "/bin/netstat",
-			Executable: true,
-			Size:       131784,
-		},
-		{
-			Type:       nar.TypeSymlink,
-			Path:       "/bin/nisdomainname",
-			LinkTarget: "hostname",
-		},
-		{
-			Type:       nar.TypeRegular,
-			Path:       "/bin/plipconfig",
-			Executable: true,
-			Size:       13160,
-		},
-		{
-			Type:       nar.TypeRegular,
-			Path:       "/bin/rarp",
-			Executable: true,
-			Size:       30384,
-		},
-		{
-			Type:       nar.TypeRegular,
-			Path:       "/bin/route",
-			Executable: true,
-			Size:       61928,
-		},
-		{
-			Type:       nar.TypeRegular,
-			Path:       "/bin/slattach",
-			Executable: true,
-			Size:       35672,
-		},
-		{
-			Type:       nar.TypeSymlink,
-			Path:       "/bin/ypdomainname",
-			LinkTarget: "hostname",
-		},
-		{
-			Type:       nar.TypeSymlink,
-			Path:       "/sbin",
-			LinkTarget: "bin",
-		},
-		{
-			Type: nar.TypeDirectory,
-			Path: "/share",
-		},
-		{
-			Type: nar.TypeDirectory,
-			Path: "/share/man",
-		},
-		{
-			Type: nar.TypeDirectory,
-			Path: "/share/man/man1",
-		},
-		{
-			Type: nar.TypeRegular,
-			Path: "/share/man/man1/dnsdomainname.1.gz",
-			Size: 40,
-		},
-		{
-			Type: nar.TypeRegular,
-			Path: "/share/man/man1/domainname.1.gz",
-			Size: 40,
-		},
-		{
-			Type: nar.TypeRegular,
-			Path: "/share/man/man1/hostname.1.gz",
-			Size: 1660,
-		},
-		{
-			Type: nar.TypeRegular,
-			Path: "/share/man/man1/nisdomainname.1.gz",
-			Size: 40,
-		},
-		{
-			Type: nar.TypeRegular,
-			Path: "/share/man/man1/ypdomainname.1.gz",
-			Size: 40,
-		},
-		{
-			Type: nar.TypeDirectory,
-			Path: "/share/man/man5",
-		},
-		{
-			Type: nar.TypeRegular,
-			Path: "/share/man/man5/ethers.5.gz",
-			Size: 563,
-		},
-		{
-			Type: nar.TypeDirectory,
-			Path: "/share/man/man8",
-		},
-		{
-			Type: nar.TypeRegular,
-			Path: "/share/man/man8/arp.8.gz",
-			Size: 2464,
-		},
-		{
-			Type: nar.TypeRegular,
-			Path: "/share/man/man8/ifconfig.8.gz",
-			Size: 3382,
-		},
-		{
-			Type: nar.TypeRegular,
-			Path: "/share/man/man8/nameif.8.gz",
-			Size: 523,
-		},
-		{
-			Type: nar.TypeRegular,
-			Path: "/share/man/man8/netstat.8.gz",
-			Size: 4284,
-		},
-		{
-			Type: nar.TypeRegular,
-			Path: "/share/man/man8/plipconfig.8.gz",
-			Size: 889,
-		},
-		{
-			Type: nar.TypeRegular,
-			Path: "/share/man/man8/rarp.8.gz",
-			Size: 1198,
-		},
-		{
-			Type: nar.TypeRegular,
-			Path: "/share/man/man8/route.8.gz",
-			Size: 3525,
-		},
-		{
-			Type: nar.TypeRegular,
-			Path: "/share/man/man8/slattach.8.gz",
-			Size: 1441,
-		},
-	}
-
-	for i, expectH := range headers {
-		hdr, e := nr.Next()
-		if !assert.NoError(t, e, i) {
+	f.Fuzz(func(t *testing.T, in []byte) {
+		nr, err := NewReader(bytes.NewReader(in))
+		if err != nil {
+			t.Log("NewReader error:", err)
 			return
 		}
-
-		// read one of the files
-		if hdr.Path == "/bin/arp" {
-			f, err := os.Open("../../test/testdata/nar_1094wph9z4nwlgvsd53abfz8i117ykiv5dwnq9nnhz846s7xqd7d.nar_bin_arp")
-			assert.NoError(t, err)
-
-			defer f.Close()
-
-			expectedContents, err := io.ReadAll(f)
-			assert.NoError(t, err)
-
-			actualContents, err := io.ReadAll(nr)
-			if assert.NoError(t, err) {
-				assert.Equal(t, expectedContents, actualContents)
+		for {
+			if _, err := nr.Next(); err != nil {
+				t.Log("Stopped from error:", err)
+				return
 			}
+			io.Copy(io.Discard, nr)
 		}
-
-		// ensure reading from symlinks or directories doesn't return any actual contents
-		// we pick examples that previously returned a regular file, so there might
-		// previously have been a reader pointing to something.
-		if hdr.Path == "/bin/dnsdomainname" || hdr.Path == "/share/man/man5" {
-			actualContents, err := io.ReadAll(nr)
-			if assert.NoError(t, err) {
-				assert.Equal(t, []byte{}, actualContents)
-			}
-		}
-
-		assert.Equal(t, expectH, *hdr)
-	}
-
-	hdr, err := nr.Next()
-	// expect to return io.EOF at the end, and no more headers
-	assert.Nil(t, hdr)
-	assert.Equal(t, io.EOF, err)
-
-	assert.NoError(t, nr.Close(), nil, "closing the reader shouldn't error")
-	assert.NotPanics(t, func() {
-		_ = nr.Close()
-	}, "closing the reader multiple times shouldn't panic")
+	})
 }

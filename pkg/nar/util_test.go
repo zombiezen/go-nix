@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/nix-community/go-nix/pkg/nar"
-	"github.com/stretchr/testify/assert"
 )
 
 //nolint:gochecknoglobals
@@ -42,11 +41,11 @@ var cases = []struct {
 }
 
 func TestLexicographicallyOrdered(t *testing.T) {
-	for i, testCase := range cases {
-		t.Run(fmt.Sprint(i), func(t *testing.T) {
-			result := nar.PathIsLexicographicallyOrdered(testCase.path1, testCase.path2)
-			assert.Equal(t, result, testCase.expected)
-		})
+	for _, test := range cases {
+		got := nar.PathIsLexicographicallyOrdered(test.path1, test.path2)
+		if got != test.expected {
+			t.Errorf("PathIsLexicographicallyOrdered(%q, %q) = %t; want %t", test.path1, test.path2, got, test.expected)
+		}
 	}
 }
 
