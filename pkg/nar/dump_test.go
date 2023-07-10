@@ -6,137 +6,66 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"testing"
 
-	"github.com/nix-community/go-nix/pkg/nar"
-	"github.com/stretchr/testify/assert"
+	"github.com/google/go-cmp/cmp"
+	. "github.com/nix-community/go-nix/pkg/nar"
 )
 
-func TestDumpPathEmptyDir(t *testing.T) {
-	var buf bytes.Buffer
-
-	err := nar.DumpPath(&buf, t.TempDir())
-	if assert.NoError(t, err) {
-		assert.Equal(t, genEmptyDirectoryNar(), buf.Bytes())
-	}
-}
-
-func TestDumpPathOneByteRegular(t *testing.T) {
-	t.Run("non-executable", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		p := filepath.Join(tmpDir, "a")
-
-		err := os.WriteFile(p, []byte{0x1}, os.ModePerm&syscall.S_IRUSR)
-		if err != nil {
-			panic(err)
+func TestDumpPath(t *testing.T) {
+	for _, test := range narTests {
+		if test.err || test.ignoreContents {
+			continue
 		}
-
-		var buf bytes.Buffer
-
-		err = nar.DumpPath(&buf, p)
-		if assert.NoError(t, err) {
-			assert.Equal(t, genOneByteRegularNar(), buf.Bytes())
-		}
-	})
-
-	t.Run("executable", func(t *testing.T) {
-		// This writes to the filesystem and looks at the attributes.
-		// As you can't represent the executable bit on windows, it would fail.
-		if runtime.GOOS == "windows" {
-			return
-		}
-		tmpDir := t.TempDir()
-		p := filepath.Join(tmpDir, "a")
-
-		err := os.WriteFile(p, []byte{0x1}, os.ModePerm&(syscall.S_IRUSR|syscall.S_IXUSR))
-		if err != nil {
-			panic(err)
-		}
-
-		var buf bytes.Buffer
-
-		// call dump path on it again
-		err = nar.DumpPath(&buf, p)
-		if assert.NoError(t, err) {
-			// We don't have a fixture with executable bit set,
-			// so pipe the nar into a reader and check the returned first header.
-			nr, err := nar.NewReader(&buf)
-			if err != nil {
-				panic(err)
+		t.Run(test.name, func(t *testing.T) {
+			for _, ent := range test.want {
+				if ent.header.Executable && runtime.GOOS == "windows" {
+					t.Skipf("Cannot test on Windows due to %q being executable", ent.header.Path)
+				}
 			}
 
-			hdr, err := nr.Next()
-			if err != nil {
-				panic(err)
+			// Set up in filesystem.
+			dir := t.TempDir()
+			for _, ent := range test.want {
+				path := filepath.Join(dir, "root")
+				if ent.header.Path != "/" {
+					path += filepath.FromSlash(ent.header.Path)
+				}
+				switch ent.header.Type {
+				case TypeRegular:
+					perm := os.FileMode(0o666)
+					if ent.header.Executable {
+						perm |= 0o111
+					}
+					if err := os.WriteFile(path, []byte(ent.data), perm); err != nil {
+						t.Fatal(err)
+					}
+				case TypeDirectory:
+					if err := os.Mkdir(path, 0o777); err != nil {
+						t.Fatal(err)
+					}
+				case TypeSymlink:
+					if err := os.Symlink(ent.header.LinkTarget, path); err != nil {
+						t.Fatal(err)
+					}
+				default:
+					t.Fatalf("For path %q, unknown type %q", ent.header.Path, ent.header.Type)
+				}
 			}
-			assert.True(t, hdr.Executable, "regular should be executable")
-		}
-	})
-}
 
-func TestDumpPathSymlink(t *testing.T) {
-	tmpDir := t.TempDir()
-	p := filepath.Join(tmpDir, "a")
+			var buf bytes.Buffer
+			if err := DumpPath(&buf, filepath.Join(dir, "root")); err != nil {
+				t.Error(err)
+			}
 
-	err := os.Symlink("/nix/store/somewhereelse", p)
-	if err != nil {
-		panic(err)
-	}
-
-	var buf bytes.Buffer
-
-	err = nar.DumpPath(&buf, p)
-	if assert.NoError(t, err) {
-		assert.Equal(t, genSymlinkNar(), buf.Bytes())
-	}
-}
-
-func TestDumpPathRecursion(t *testing.T) {
-	tmpDir := t.TempDir()
-	p := filepath.Join(tmpDir, "a")
-
-	err := os.WriteFile(p, []byte{0x1}, os.ModePerm&syscall.S_IRUSR)
-	if err != nil {
-		panic(err)
-	}
-
-	var buf bytes.Buffer
-
-	err = nar.DumpPath(&buf, tmpDir)
-	if assert.NoError(t, err) {
-		// We don't have a fixture for the created path
-		// so pipe the nar into a reader and check the headers returned.
-		nr, err := nar.NewReader(&buf)
-		if err != nil {
-			panic(err)
-		}
-
-		// read in first node
-		hdr, err := nr.Next()
-		assert.NoError(t, err)
-		assert.Equal(t, &nar.Header{
-			Path: "/",
-			Type: nar.TypeDirectory,
-		}, hdr)
-
-		// read in second node
-		hdr, err = nr.Next()
-		assert.NoError(t, err)
-		assert.Equal(t, &nar.Header{
-			Path: "/a",
-			Type: nar.TypeRegular,
-			Size: 1,
-		}, hdr)
-
-		// read in contents
-		contents, err := io.ReadAll(nr)
-		assert.NoError(t, err)
-		assert.Equal(t, []byte{0x1}, contents)
-
-		// we should be done
-		_, err = nr.Next()
-		assert.Equal(t, io.EOF, err)
+			want, err := os.ReadFile(filepath.Join("testdata", test.dataFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(want, buf.Bytes()); diff != "" {
+				t.Errorf("-want +got:\n%s", diff)
+			}
+		})
 	}
 }
 
@@ -145,21 +74,33 @@ func TestDumpPathFilter(t *testing.T) {
 		tmpDir := t.TempDir()
 		p := filepath.Join(tmpDir, "a")
 
-		err := os.WriteFile(p, []byte{0x1}, os.ModePerm&syscall.S_IRUSR)
+		err := os.WriteFile(p, []byte{0x1}, 0o444)
 		if err != nil {
-			panic(err)
+			t.Fatal(err)
 		}
 
 		var buf bytes.Buffer
 
-		err = nar.DumpPathFilter(&buf, p, func(name string, nodeType nar.NodeType) bool {
-			assert.Equal(t, name, p)
-			assert.Equal(t, nodeType, nar.TypeRegular)
+		err = DumpPathFilter(&buf, p, func(name string, nodeType NodeType) bool {
+			if name != p {
+				t.Errorf("name = %q; want %q", name, p)
+			}
+			if nodeType != TypeRegular {
+				t.Errorf("nodeType = %q; want %q", nodeType, TypeRegular)
+			}
 
 			return true
 		})
-		if assert.NoError(t, err) {
-			assert.Equal(t, genOneByteRegularNar(), buf.Bytes())
+		if err != nil {
+			t.Error("DumpPathFilter:", err)
+		}
+
+		want, err := os.ReadFile(filepath.Join("testdata", "1byte-regular.nar"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(want, buf.Bytes()); diff != "" {
+			t.Errorf("-want +got:\n%s", diff)
 		}
 	})
 
@@ -167,29 +108,54 @@ func TestDumpPathFilter(t *testing.T) {
 		tmpDir := t.TempDir()
 		p := filepath.Join(tmpDir, "a")
 
-		err := os.WriteFile(p, []byte{0x1}, os.ModePerm&syscall.S_IRUSR)
+		err := os.WriteFile(p, []byte{0x1}, 0o444)
 		if err != nil {
-			panic(err)
+			t.Fatal(err)
 		}
 
 		var buf bytes.Buffer
 
-		err = nar.DumpPathFilter(&buf, tmpDir, func(name string, nodeType nar.NodeType) bool {
+		err = DumpPathFilter(&buf, tmpDir, func(name string, nodeType NodeType) bool {
 			return name != p
 		})
-		if assert.NoError(t, err) {
-			assert.NotEqual(t, genOneByteRegularNar(), buf.Bytes())
+		if err != nil {
+			t.Error("DumpPathFilter:", err)
+		}
+
+		want, err := os.ReadFile(filepath.Join("testdata", "empty-directory.nar"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(want, buf.Bytes()); diff != "" {
+			t.Errorf("-want +got:\n%s", diff)
 		}
 	})
 }
 
 func BenchmarkDumpPath(b *testing.B) {
 	b.Run("testdata", func(b *testing.B) {
+		bc := new(byteCounter)
+		err := DumpPath(bc, "testdata")
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.ResetTimer()
+		b.SetBytes(bc.n)
+
 		for i := 0; i < b.N; i++ {
-			err := nar.DumpPath(io.Discard, "../../test/testdata")
+			err := DumpPath(io.Discard, "testdata")
 			if err != nil {
-				panic(err)
+				b.Fatal(err)
 			}
 		}
 	})
+}
+
+type byteCounter struct {
+	n int64
+}
+
+func (bc *byteCounter) Write(p []byte) (n int, err error) {
+	bc.n += int64(len(p))
+	return len(p), nil
 }
