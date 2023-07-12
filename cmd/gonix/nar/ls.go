@@ -21,7 +21,7 @@ func headerLineString(hdr *nar.Header) string {
 	var sb strings.Builder
 
 	sb.WriteString(hdr.FileInfo().Mode().String())
-	sb.WriteString(" ")
+	sb.WriteString(" /")
 	sb.WriteString(hdr.Path)
 
 	// if regular file, show size in parantheses. We don't bother about aligning it nicely,
@@ -47,11 +47,7 @@ func (cmd *LsCmd) Run() error {
 		return err
 	}
 
-	nr, err := nar.NewReader(f)
-	if err != nil {
-		return err
-	}
-
+	nr := nar.NewReader(f)
 	for {
 		hdr, err := nr.Next()
 		if err != nil {
@@ -64,8 +60,8 @@ func (cmd *LsCmd) Run() error {
 		}
 
 		// if the yielded path starts with the path specified
-		if strings.HasPrefix(hdr.Path, cmd.Path) {
-			remainder := hdr.Path[len(cmd.Path):]
+		if strings.HasPrefix("/"+hdr.Path, cmd.Path) {
+			remainder := hdr.Path[len(cmd.Path)-1:]
 			// If recursive was requested, return all these elements.
 			// Else, look at the remainder - There may be no other slashes.
 			if cmd.Recursive || !strings.Contains(remainder, "/") {
@@ -75,7 +71,7 @@ func (cmd *LsCmd) Run() error {
 		} else {
 			// We can exit early as soon as we receive a header whose path doesn't have the prefix we're searching for,
 			// and the path is lexicographically bigger than our search prefix
-			if hdr.Path > cmd.Path {
+			if "/"+hdr.Path > cmd.Path {
 				return nil
 			}
 		}

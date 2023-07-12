@@ -1,72 +1,72 @@
 package nar_test
 
 import (
+	"io/fs"
 	"testing"
 
-	"github.com/nix-community/go-nix/pkg/nar"
-	"github.com/stretchr/testify/assert"
+	. "github.com/nix-community/go-nix/pkg/nar"
 )
 
 func TestHeaderValidate(t *testing.T) {
-	headerRegular := &nar.Header{
-		Path:       "/foo/bar",
-		Type:       nar.TypeRegular,
-		LinkTarget: "",
-		Size:       0,
-		Executable: false,
+	headerRegular := &Header{
+		Path: "foo/bar",
 	}
 
 	t.Run("valid", func(t *testing.T) {
 		vHeader := *headerRegular
-		assert.NoError(t, vHeader.Validate())
+		if err := vHeader.Validate(); err != nil {
+			t.Fatal(err)
+		}
 	})
 
 	t.Run("invalid path", func(t *testing.T) {
 		invHeader := *headerRegular
-		invHeader.Path = "foo/bar"
-		assert.Error(t, invHeader.Validate())
+		invHeader.Path = "/foo/bar"
+		if err := invHeader.Validate(); err == nil {
+			t.Error("Validate did not return an error")
+		}
 
-		invHeader.Path = "/foo/bar\000/"
-		assert.Error(t, invHeader.Validate())
+		invHeader.Path = "foo/bar\000/"
+		if err := invHeader.Validate(); err == nil {
+			t.Error("Validate did not return an error")
+		}
 	})
 
 	t.Run("LinkTarget set on regulars or directories", func(t *testing.T) {
 		invHeader := *headerRegular
 		invHeader.LinkTarget = "foo"
 
-		assert.Error(t, invHeader.Validate())
+		if err := invHeader.Validate(); err == nil {
+			t.Error("Validate did not return an error")
+		}
 
-		invHeader.Type = nar.TypeDirectory
-		assert.Error(t, invHeader.Validate())
+		invHeader.Mode = fs.ModeDir
+		if err := invHeader.Validate(); err == nil {
+			t.Error("Validate did not return an error")
+		}
 	})
 
 	t.Run("Size set on directories or symlinks", func(t *testing.T) {
 		invHeader := *headerRegular
-		invHeader.Type = nar.TypeDirectory
+		invHeader.Mode = fs.ModeDir
 		invHeader.Size = 1
-		assert.Error(t, invHeader.Validate())
+		if err := invHeader.Validate(); err == nil {
+			t.Error("Validate did not return an error")
+		}
 
 		invHeader = *headerRegular
-		invHeader.Type = nar.TypeSymlink
+		invHeader.Mode = fs.ModeSymlink
 		invHeader.Size = 1
-		assert.Error(t, invHeader.Validate())
-	})
-
-	t.Run("Executable set on directories or symlinks", func(t *testing.T) {
-		invHeader := *headerRegular
-		invHeader.Type = nar.TypeDirectory
-		invHeader.Executable = true
-		assert.Error(t, invHeader.Validate())
-
-		invHeader = *headerRegular
-		invHeader.Type = nar.TypeSymlink
-		invHeader.Executable = true
-		assert.Error(t, invHeader.Validate())
+		if err := invHeader.Validate(); err == nil {
+			t.Error("Validate did not return an error")
+		}
 	})
 
 	t.Run("No LinkTarget set on symlinks", func(t *testing.T) {
 		invHeader := *headerRegular
-		invHeader.Type = nar.TypeSymlink
-		assert.Error(t, invHeader.Validate())
+		invHeader.Mode = fs.ModeSymlink
+		if err := invHeader.Validate(); err == nil {
+			t.Error("Validate did not return an error")
+		}
 	})
 }

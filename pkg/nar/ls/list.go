@@ -8,6 +8,12 @@ import (
 	"github.com/nix-community/go-nix/pkg/nar"
 )
 
+const (
+	typeRegular   = "regular"
+	typeDirectory = "directory"
+	typeSymlink   = "symlink"
+)
+
 // Root represents the .ls file root entry.
 type Root struct {
 	Version int `json:"version"`
@@ -16,7 +22,7 @@ type Root struct {
 
 // Node represents one of the entries in a .ls file.
 type Node struct {
-	Type       nar.NodeType     `json:"type"`
+	Type       string           `json:"type"`
 	Entries    map[string]*Node `json:"entries"`
 	Size       int64            `json:"size"`
 	LinkTarget string           `json:"target"`
@@ -34,25 +40,25 @@ func validateNode(node *Node) error {
 		}
 
 		// Regular files and directories may not have LinkTarget set.
-		if node.Type == nar.TypeRegular || node.Type == nar.TypeDirectory {
+		if node.Type == typeRegular || node.Type == typeDirectory {
 			if node.LinkTarget != "" {
-				return fmt.Errorf("type is %v, but LinkTarget is not empty", node.Type.String())
+				return fmt.Errorf("type is %s, but LinkTarget is not empty", node.Type)
 			}
 		}
 
 		// Directories and Symlinks may not have Size and Executable set.
-		if node.Type == nar.TypeDirectory || node.Type == nar.TypeSymlink {
+		if node.Type == typeDirectory || node.Type == typeSymlink {
 			if node.Size != 0 {
-				return fmt.Errorf("type is %v, but Size is not 0", node.Type.String())
+				return fmt.Errorf("type is %s, but Size is not 0", node.Type)
 			}
 
 			if node.Executable {
-				return fmt.Errorf("type is %v, but Executable is true", node.Type.String())
+				return fmt.Errorf("type is %s, but Executable is true", node.Type)
 			}
 		}
 
 		// Symlinks need to specify a target.
-		if node.Type == nar.TypeSymlink {
+		if node.Type == typeSymlink {
 			if node.LinkTarget == "" {
 				return fmt.Errorf("type is symlink, but LinkTarget is empty")
 			}

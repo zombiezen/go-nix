@@ -3,6 +3,7 @@ package nar_test
 import (
 	"bytes"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,7 +20,7 @@ func TestDumpPath(t *testing.T) {
 		}
 		t.Run(test.name, func(t *testing.T) {
 			for _, ent := range test.want {
-				if ent.header.Executable && runtime.GOOS == "windows" {
+				if ent.header.Mode&0o111 != 0 && runtime.GOOS == "windows" {
 					t.Skipf("Cannot test on Windows due to %q being executable", ent.header.Path)
 				}
 			}
@@ -27,29 +28,22 @@ func TestDumpPath(t *testing.T) {
 			// Set up in filesystem.
 			dir := t.TempDir()
 			for _, ent := range test.want {
-				path := filepath.Join(dir, "root")
-				if ent.header.Path != "/" {
-					path += filepath.FromSlash(ent.header.Path)
-				}
-				switch ent.header.Type {
-				case TypeRegular:
-					perm := os.FileMode(0o666)
-					if ent.header.Executable {
-						perm |= 0o111
-					}
-					if err := os.WriteFile(path, []byte(ent.data), perm); err != nil {
+				path := filepath.Join(dir, "root", filepath.FromSlash(ent.header.Path))
+				switch ent.header.Mode.Type() {
+				case 0:
+					if err := os.WriteFile(path, []byte(ent.data), ent.header.Mode.Perm()); err != nil {
 						t.Fatal(err)
 					}
-				case TypeDirectory:
+				case fs.ModeDir:
 					if err := os.Mkdir(path, 0o777); err != nil {
 						t.Fatal(err)
 					}
-				case TypeSymlink:
+				case fs.ModeSymlink:
 					if err := os.Symlink(ent.header.LinkTarget, path); err != nil {
 						t.Fatal(err)
 					}
 				default:
-					t.Fatalf("For path %q, unknown type %q", ent.header.Path, ent.header.Type)
+					t.Fatalf("For path %q, unknown mode %q", ent.header.Path, ent.header.Mode)
 				}
 			}
 
@@ -81,12 +75,12 @@ func TestDumpPathFilter(t *testing.T) {
 
 		var buf bytes.Buffer
 
-		err = DumpPathFilter(&buf, p, func(name string, nodeType NodeType) bool {
+		err = DumpPathFilter(&buf, p, func(name string, mode fs.FileMode) bool {
 			if name != p {
 				t.Errorf("name = %q; want %q", name, p)
 			}
-			if nodeType != TypeRegular {
-				t.Errorf("nodeType = %q; want %q", nodeType, TypeRegular)
+			if mode.Type() != 0 {
+				t.Errorf("nodeType = %v; want %v", mode, mode&^fs.ModeType)
 			}
 
 			return true
@@ -115,7 +109,7 @@ func TestDumpPathFilter(t *testing.T) {
 
 		var buf bytes.Buffer
 
-		err = DumpPathFilter(&buf, tmpDir, func(name string, nodeType NodeType) bool {
+		err = DumpPathFilter(&buf, tmpDir, func(name string, mode fs.FileMode) bool {
 			return name != p
 		})
 		if err != nil {

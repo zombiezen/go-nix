@@ -1,7 +1,6 @@
 package nar
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -20,11 +19,7 @@ func (cmd *CatCmd) Run() error {
 		return err
 	}
 
-	nr, err := nar.NewReader(f)
-	if err != nil {
-		return err
-	}
-
+	nr := nar.NewReader(f)
 	for {
 		hdr, err := nr.Next()
 		if err != nil {
@@ -36,20 +31,15 @@ func (cmd *CatCmd) Run() error {
 			return err
 		}
 
-		if hdr.Path == cmd.Path {
-			// we can't cat directories and symlinks
-			if hdr.Type != nar.TypeRegular {
+		if "/"+hdr.Path == cmd.Path {
+			if hdr.Mode.Type() != 0 {
 				return fmt.Errorf("unable to cat non-regular file")
 			}
-
-			w := bufio.NewWriter(os.Stdout)
-
-			_, err := io.Copy(w, nr)
-			if err != nil {
-				return err
-			}
-
-			return w.Flush()
+			break
 		}
 	}
+	// we can't cat directories and symlinks
+
+	_, err = io.Copy(os.Stdout, nr)
+	return err
 }

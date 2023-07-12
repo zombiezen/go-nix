@@ -1,385 +1,356 @@
 package nar
 
 import (
-	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
-	"math"
-	"path"
+	"io/fs"
+	"strings"
+)
 
-	"github.com/nix-community/go-nix/pkg/wire"
+var (
+	errInvalid      = errors.New("nar: invalid data")
+	errTrailingData = errors.New("nar: trailing data")
 )
 
 const (
-	// for small tokens,
-	// we use this to limit how large an invalid token we'll read.
-	tokenLenMax = 32
-	// maximum length for a single path element
-	// NAME_MAX is 255 on Linux.
-	nameLenMax = 255
-	// maximum length for a relative path
-	// PATH_MAX is 4096 on Linux, but that includes a null byte.
-	pathLenMax = 4096 - 1
+	readerStateFirst int8 = iota
+	readerStateFile
+	readerStateDirectoryStart
+	readerStateDirectory
 )
 
-// Reader implements io.ReadCloser.
-var _ io.ReadCloser = &Reader{}
-
-// Reader providers sequential access to the contents of a NAR archive.
-// Reader.Next advances to the next file in the archive (including the first),
-// and then Reader can be treated as an io.Reader to access the file's data.
+// Reader provides sequential access to the contents of a NAR archive.
+// [Reader.Next] advances to the next file in the archive (including the first),
+// and then Reader can be treated as an [io.Reader] to access the file's data.
 type Reader struct {
-	r             io.Reader
-	contentReader io.ReadCloser
+	r io.Reader
+	// buf is a temporary buffer used for reading.
+	// Its length is a multiple of stringAlign
+	// that is sufficient to hold any of the known tokens in the NAR format.
+	buf   [16]byte
+	state int8
 
-	// channels to communicate with the parser goroutine
-
-	// channel used by the parser to communicate back headers and erorrs
-	headers chan *Header
-	errors  chan error
-
-	// whenever we once got back an error from the parser, we blow a fuse,
-	// store the error here, and Next() won't resume the parser anymore.
+	// padding is the number of padding bytes that trail after the file contents
+	// (only valid if state == readerStateFile).
+	padding int8
+	// hasRoot is true if the root file system object is a directory.
+	hasRoot bool
+	// remaining is the number of bytes remaining in file contents
+	// (only valid if state == readerStateFile).
+	remaining int64
+	// prefix is the current directory's path including a trailing slash.
+	prefix string
+	// err is the error to return for future calls to Next or Read.
 	err error
-
-	// NarReader uses this to resume the parser
-	next chan bool
-
-	// keep a record of the previously received hdr.Path.
-	// Only read and updated in the Next() method, receiving from the channel
-	// populated by the goroutine, not the goroutine itself.
-	// We do this to bail out if we receive a header from the channel that's
-	// lexicographically smaller than the previous one.
-	// Elements in NAR files need to be ordered for reproducibility.
-	previousHdrPath string
 }
 
-// NewReader creates a new Reader reading from r.
-// It'll try to detect the magic header and will fail if it can't be read.
-func NewReader(r io.Reader) (*Reader, error) {
-	err := expectString(r, narVersionMagic1)
-	if err != nil {
-		return nil, fmt.Errorf("invalid nar version magic: %w", err)
-	}
-
-	narReader := &Reader{
-		r: r,
-		// create a dummy reader for lm, that'll return EOF immediately,
-		// so reading from Reader before Next is called won't oops.
-		contentReader: io.NopCloser(io.LimitReader(bytes.NewReader([]byte{}), 0)),
-
-		headers: make(chan *Header),
-		errors:  make(chan error),
-		err:     nil,
-		next:    make(chan bool),
-	}
-
-	// kick off the goroutine
-	go func() {
-		// wait for the first Next() call
-		next := <-narReader.next
-		// immediate Close(), without ever calling Next()
-		if !next {
-			return
-		}
-
-		err := narReader.parseNode("/")
-		if err != nil {
-			narReader.errors <- err
-		} else {
-			narReader.errors <- io.EOF
-		}
-
-		close(narReader.headers)
-		close(narReader.errors)
-	}()
-
-	return narReader, nil
+// NewReader creates a new [Reader] reading from r.
+func NewReader(r io.Reader) *Reader {
+	return &Reader{r: r}
 }
 
-func (nr *Reader) parseNode(p string) error {
-	// accept a opening (
-	err := expectString(nr.r, "(")
-	if err != nil {
-		return err
-	}
-
-	// accept a type
-	err = expectString(nr.r, "type")
-	if err != nil {
-		return err
-	}
-
-	var currentToken string
-
-	// switch on the type label
-	currentToken, err = wire.ReadString(nr.r, tokenLenMax)
-	if err != nil {
-		return err
-	}
-
-	switch currentToken {
-	case "regular":
-		// we optionally see executable, marking the file as executable,
-		// and then contents, with the contents afterwards
-		currentToken, err = wire.ReadString(nr.r, uint64(len("executable")))
-		if err != nil {
-			return err
-		}
-
-		executable := false
-		if currentToken == "executable" {
-			executable = true
-
-			// These seems to be 8 null bytes after the executable field,
-			// which can be seen as an empty string field.
-			_, err := wire.ReadBytesFull(nr.r, 0)
-			if err != nil {
-				return fmt.Errorf("error reading placeholder: %w", err)
-			}
-
-			currentToken, err = wire.ReadString(nr.r, tokenLenMax)
-			if err != nil {
-				return err
-			}
-		}
-
-		if currentToken != "contents" {
-			return fmt.Errorf("invalid token: %v, expected 'contents'", currentToken)
-		}
-
-		// peek at the bytes field
-		contentLength, contentReader, err := wire.ReadBytes(nr.r)
-		if err != nil {
-			return err
-		}
-
-		if contentLength > math.MaxInt64 {
-			return fmt.Errorf("content length of %v is larger than MaxInt64", contentLength)
-		}
-
-		nr.contentReader = contentReader
-
-		nr.headers <- &Header{
-			Path:       p,
-			Type:       TypeRegular,
-			LinkTarget: "",
-			Size:       int64(contentLength),
-			Executable: executable,
-		}
-
-		// wait for the Next() call
-		next := <-nr.next
-		if !next {
-			return nil
-		}
-
-		// seek to the end of the bytes field - the consumer might not have read all of it
-		err = nr.contentReader.Close()
-		if err != nil {
-			return err
-		}
-
-		// consume the next token
-		currentToken, err = wire.ReadString(nr.r, tokenLenMax)
-		if err != nil {
-			return err
-		}
-
-	case "symlink":
-		// accept the `target` keyword
-		err := expectString(nr.r, "target")
-		if err != nil {
-			return err
-		}
-
-		// read in the target
-		target, err := wire.ReadString(nr.r, pathLenMax)
-		if err != nil {
-			return err
-		}
-
-		// set nr.contentReader to a empty reader, we can't read from symlinks!
-		nr.contentReader = io.NopCloser(io.LimitReader(bytes.NewReader([]byte{}), 0))
-
-		// yield back the header
-		nr.headers <- &Header{
-			Path:       p,
-			Type:       TypeSymlink,
-			LinkTarget: target,
-			Size:       0,
-			Executable: false,
-		}
-
-		// wait for the Next() call
-		next := <-nr.next
-		if !next {
-			return nil
-		}
-
-		// consume the next token
-		currentToken, err = wire.ReadString(nr.r, tokenLenMax)
-		if err != nil {
-			return err
-		}
-
-	case "directory":
-		// set nr.contentReader to a empty reader, we can't read from directories!
-		nr.contentReader = io.NopCloser(io.LimitReader(bytes.NewReader([]byte{}), 0))
-		nr.headers <- &Header{
-			Path:       p,
-			Type:       TypeDirectory,
-			LinkTarget: "",
-			Size:       0,
-			Executable: false,
-		}
-
-		// wait for the Next() call
-		next := <-nr.next
-		if !next {
-			return nil
-		}
-
-		// there can be none, one or multiple `entry ( name foo node <Node> )`
-
-		for {
-			// read the next token
-			currentToken, err = wire.ReadString(nr.r, tokenLenMax)
-			if err != nil {
-				return err
-			}
-
-			if currentToken == "entry" { //nolint:nestif
-				// ( name foo node <Node> )
-				err = expectString(nr.r, "(")
-				if err != nil {
-					return err
-				}
-
-				err = expectString(nr.r, "name")
-				if err != nil {
-					return err
-				}
-
-				currentToken, err = wire.ReadString(nr.r, nameLenMax)
-				if err != nil {
-					return err
-				}
-
-				// ensure the name is valid
-				if !IsValidNodeName(currentToken) {
-					return fmt.Errorf("name `%v` is invalid", currentToken)
-				}
-
-				newPath := path.Join(p, currentToken)
-
-				err = expectString(nr.r, "node")
-				if err != nil {
-					return err
-				}
-
-				// <Node>, recurse
-				err = nr.parseNode(newPath)
-				if err != nil {
-					return err
-				}
-
-				err = expectString(nr.r, ")")
-				if err != nil {
-					return err
-				}
-			}
-
-			if currentToken == ")" {
-				break
-			}
-		}
-	}
-
-	if currentToken != ")" {
-		return fmt.Errorf("unexpected token: %v, expected `)`", currentToken)
-	}
-
-	return nil
-}
-
-// Next advances to the next entry in the NAR archive. The Header.Size
-// determines how many bytes can be read for the next file. Any remaining data
-// in the current file is automatically discarded.
-//
-// io.EOF is returned at the end of input.
-// Errors are returned in case invalid data was read.
-// This includes non-canonically sorted NAR files.
-func (nr *Reader) Next() (*Header, error) {
-	// if there's an error already stored, keep returning it
+// Next advances to the next entry in the NAR archive.
+// The Header.Size determines how many bytes can be read for the next file.
+// Any remaining data in the current file is automatically discarded.
+// At the end of the archive, Next returns the error [io.EOF].
+func (nr *Reader) Next() (_ *Header, err error) {
 	if nr.err != nil {
 		return nil, nr.err
 	}
-
-	// else, resume the parser
-	nr.next <- true
-
-	// return either an error or headers
-	select {
-	case hdr := <-nr.headers:
-		if !PathIsLexicographicallyOrdered(nr.previousHdrPath, hdr.Path) {
-			err := fmt.Errorf("received header in the wrong order, %v <= %v", hdr.Path, nr.previousHdrPath)
-
-			// blow fuse
-			nr.err = err
-
-			return nil, err
+	defer func() {
+		if err != nil && nr.err == nil {
+			nr.err = errInvalid
 		}
+	}()
 
-		nr.previousHdrPath = hdr.Path
-
+	switch nr.state {
+	case readerStateFirst:
+		if err := nr.expect(magic); err != nil {
+			return nil, fmt.Errorf("nar: magic number: %w", err)
+		}
+		hdr := new(Header)
+		if err := nr.node(hdr); err != nil {
+			return nil, fmt.Errorf("nar: %w", err)
+		}
+		switch nr.state {
+		case readerStateFirst:
+			// Self-contained first Next call (symlink).
+			// Will return error on next call to Next.
+			nr.verifyEOF()
+		case readerStateDirectoryStart:
+			nr.hasRoot = true
+		}
 		return hdr, nil
-
-	case err := <-nr.errors:
-		if err != nil {
-			// blow fuse
-			nr.err = err
-		}
-
-		return nil, err
-	}
-}
-
-// Read reads from the current file in the NAR archive. It returns (0, io.EOF)
-// when it reaches the end of that file, until Next is called to advance to
-// the next file.
-//
-// Calling Read on special types like TypeSymlink or TypeDir returns (0,
-// io.EOF).
-func (nr *Reader) Read(b []byte) (int, error) {
-	return nr.contentReader.Read(b)
-}
-
-// Close does all internal cleanup. It doesn't close the underlying reader (which can be any io.Reader).
-func (nr *Reader) Close() error {
-	if nr.err != io.EOF {
-		// Signal the parser there won't be any next.
-		close(nr.next)
-	}
-
-	return nil
-}
-
-// expectString reads a string field from a reader, expecting a certain result,
-// and errors out if the reader ends unexpected, or didn't read the expected.
-func expectString(r io.Reader, expected string) error {
-	s, err := wire.ReadString(r, uint64(len(expected)))
-	if err != nil {
+	case readerStateFile:
+		// Advance to end of file.
+		_, err := io.CopyN(io.Discard, nr.r, nr.remaining+int64(nr.padding))
 		if err == io.EOF {
 			err = io.ErrUnexpectedEOF
 		}
+		if err != nil {
+			nr.err = fmt.Errorf("nar: %w", err)
+			return nil, nr.err
+		}
+		if err := nr.expect(")"); err != nil {
+			return nil, fmt.Errorf("nar: %w", err)
+		}
 
+		// Now advance to next header.
+		if !nr.hasRoot {
+			nr.verifyEOF()
+			return nil, nr.err
+		}
+		nr.state = readerStateDirectory
+		fallthrough
+	case readerStateDirectory, readerStateDirectoryStart:
+		// Close out the previous entry's parenthesis.
+		if nr.state != readerStateDirectoryStart {
+			if err := nr.expect(")"); err != nil {
+				return nil, fmt.Errorf("nar: %w", err)
+			}
+			nr.state = readerStateDirectory
+		}
+
+	popLoop:
+		for {
+			n, err := nr.readSmallString()
+			if err != nil {
+				return nil, fmt.Errorf("nar: %w", err)
+			}
+			switch string(nr.buf[:n]) {
+			case ")":
+				// Pop up a directory.
+				if nr.prefix == "" {
+					nr.verifyEOF()
+					return nil, nr.err
+				}
+				// Close out the directory entry's parenthesis.
+				if err := nr.expect(")"); err != nil {
+					return nil, fmt.Errorf("nar: %w", err)
+				}
+				prevSlash := strings.LastIndexByte(nr.prefix[:len(nr.prefix)-len("/")], '/')
+				if prevSlash < 0 {
+					nr.prefix = ""
+				} else {
+					nr.prefix = nr.prefix[:prevSlash+len("/")]
+				}
+			case entryToken:
+				break popLoop
+			default:
+				return nil, fmt.Errorf("nar: directory: got %q token (expected \")\" or %q)", nr.buf[:n], entryToken)
+			}
+		}
+
+		if err := nr.expect("("); err != nil {
+			return nil, fmt.Errorf("nar: directory: %w", err)
+		}
+		if err := nr.expect(nameToken); err != nil {
+			return nil, fmt.Errorf("nar: directory: %w", err)
+		}
+		name, err := nr.readString(entryNameMaxLen)
+		if err != nil {
+			return nil, fmt.Errorf("nar: directory: entry name: %w", err)
+		}
+		if err := validateFilename(name); err != nil {
+			return nil, fmt.Errorf("nar: directory: entry name: %v", err)
+		}
+		if err := nr.expect(nodeToken); err != nil {
+			return nil, fmt.Errorf("nar: directory: %w", err)
+		}
+		hdr := &Header{Path: nr.prefix + name}
+		if err := nr.node(hdr); err != nil {
+			return nil, fmt.Errorf("nar: %w", err)
+		}
+		return hdr, nil
+	default:
+		panic("unreachable")
+	}
+}
+
+// Read reads from the current file in the NAR archive.
+// It returns (0, io.EOF) when it reaches the end of that file,
+// until [Reader.Next] is called to advance to the next file.
+//
+// Calling Read on special types like [fs.ModeDir] and [fs.ModeSymlink]
+// returns (0, io.EOF).
+func (nr *Reader) Read(p []byte) (n int, err error) {
+	if nr.state != readerStateFile || nr.remaining <= 0 {
+		// Special files or EOF always should report io.EOF,
+		// even if there are other errors present.
+		return 0, io.EOF
+	}
+	if nr.err != nil {
+		return 0, nr.err
+	}
+	if int64(len(p)) > nr.remaining {
+		p = p[:nr.remaining]
+	}
+	n, err = nr.r.Read(p)
+	nr.remaining -= int64(n)
+	if err == io.EOF {
+		// Files have a closing parenthesis token,
+		// so encountering an EOF from the underlying reader is always unexpected.
+		err = io.ErrUnexpectedEOF
+	}
+	if err != nil {
+		nr.err = fmt.Errorf("nar: %w", err)
+	}
+	if nr.remaining <= 0 {
+		// If we've hit the regular file's contents boundary,
+		// let the Read report success (since we did return all the bytes)
+		// but then the next call to Next will fail.
+		err = nil
+	}
+	return n, err
+}
+
+func (nr *Reader) node(hdr *Header) error {
+	if err := nr.expect("("); err != nil {
 		return err
 	}
-
-	if s != expected {
-		return fmt.Errorf("expected '%v' got '%v'", expected, s)
+	if err := nr.expect("type"); err != nil {
+		return err
 	}
+	n, err := nr.readSmallString()
+	if err != nil {
+		return fmt.Errorf("type: %w", err)
+	}
+	switch string(nr.buf[:n]) {
+	case typeRegular:
+		n, err := nr.readSmallString()
+		if err != nil {
+			return fmt.Errorf("regular: %w", err)
+		}
+		hdr.Mode = 0o444
+		switch string(nr.buf[:n]) {
+		case executableToken:
+			hdr.Mode |= 0o111
+			if err := nr.expect(""); err != nil {
+				return err
+			}
+			if err := nr.expect(contentsToken); err != nil {
+				return err
+			}
+		case contentsToken:
+			// Do nothing.
+		default:
+			return fmt.Errorf("regular: got %q token (expected %q or %q)", nr.buf[:n], executableToken, contentsToken)
+		}
+		unsignedSize, err := nr.readInt()
+		if err != nil {
+			return err
+		}
+		if unsignedSize >= 1<<63 {
+			return fmt.Errorf("file too large (%d bytes)", unsignedSize)
+		}
+		hdr.Size = int64(unsignedSize)
+		nr.state = readerStateFile
+		nr.remaining = int64(unsignedSize)
+		nr.padding = int8(stringPaddingLength(int(unsignedSize % stringAlign)))
+	case typeDirectory:
+		if hdr.Path != "" {
+			nr.prefix = hdr.Path + "/"
+		}
+		hdr.Mode = fs.ModeDir | 0o555
+		nr.state = readerStateDirectoryStart
+	case typeSymlink:
+		if err := nr.expect(targetToken); err != nil {
+			return fmt.Errorf("symlink: %w", err)
+		}
+		var err error
+		hdr.LinkTarget, err = nr.readString(symlinkTargetMaxLen)
+		if err != nil {
+			return fmt.Errorf("symlink target: %w", err)
+		}
+		hdr.Mode = fs.ModeSymlink | 0o777
+		if err := nr.expect(")"); err != nil {
+			return err
+		}
+		if nr.state == readerStateDirectoryStart {
+			nr.state = readerStateDirectory
+		}
+	default:
+		return fmt.Errorf("invalid node type %q", nr.buf[:n])
+	}
+	return nil
+}
 
+// verifyEOF consumes a single byte to verify that the reader is at EOF.
+// r.err will always be non-nil after verifyEOF returns.
+func (nr *Reader) verifyEOF() {
+	switch _, err := io.ReadFull(nr.r, nr.buf[:1]); err {
+	case nil:
+		nr.err = errTrailingData
+	case io.EOF:
+		nr.err = io.EOF
+	default:
+		nr.err = fmt.Errorf("nar: at eof: %w", err)
+	}
+}
+
+func (nr *Reader) read(p []byte) error {
+	_, err := io.ReadFull(nr.r, p)
+	if err == io.EOF {
+		err = io.ErrUnexpectedEOF
+	}
+	if err != nil {
+		nr.err = err
+		return err
+	}
+	return nil
+}
+
+func (nr *Reader) readInt() (uint64, error) {
+	if err := nr.read(nr.buf[:8]); err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint64(nr.buf[:8]), nil
+}
+
+// readSmallString reads a small string into r.buf,
+// returning how many bytes were read.
+// Because of the NAR file structure,
+// any [io.EOF] is treated as [io.ErrUnexpectedEOF].
+func (nr *Reader) readSmallString() (n int, err error) {
+	nn, err := nr.readInt()
+	if err != nil {
+		return 0, err
+	}
+	if nn > uint64(len(nr.buf)) {
+		return 0, fmt.Errorf("got string of length %d (max %d in this context)", nn, len(nr.buf))
+	}
+	if err := nr.read(nr.buf[:padStringSize(int(nn))]); err != nil {
+		return 0, err
+	}
+	return int(nn), nil
+}
+
+func (nr *Reader) readString(maxLength int) (string, error) {
+	n, err := nr.readInt()
+	if err != nil {
+		return "", err
+	}
+	if n > uint64(maxLength) {
+		return "", fmt.Errorf("got string of length %d (max %d in this context)", n, maxLength)
+	}
+	buf := make([]byte, padStringSize(int(n)))
+	if err := nr.read(buf); err != nil {
+		return "", err
+	}
+	return string(buf[:n]), nil
+}
+
+func (nr *Reader) expect(s string) error {
+	n, err := nr.readSmallString()
+	if err != nil {
+		return err
+	}
+	// Under gc compiler, string conversion will not allocate.
+	// https://github.com/golang/go/wiki/CompilerOptimizations#conversion-for-string-comparison
+	if string(nr.buf[:n]) != s {
+		return fmt.Errorf("got %q token (expected %q token)", string(nr.buf[:n]), s)
+	}
 	return nil
 }

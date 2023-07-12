@@ -4,8 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nix-community/go-nix/pkg/nar"
-	"github.com/nix-community/go-nix/pkg/nar/ls"
+	. "github.com/nix-community/go-nix/pkg/nar/ls"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -33,19 +32,19 @@ const fixture = `
 
 func TestLS(t *testing.T) {
 	r := strings.NewReader(fixture)
-	root, err := ls.ParseLS(r)
+	root, err := ParseLS(r)
 	assert.NoError(t, err)
 
-	expectedRoot := &ls.Root{
+	expectedRoot := &Root{
 		Version: 1,
-		Root: ls.Node{
-			Type: nar.TypeDirectory,
-			Entries: map[string]*ls.Node{
+		Root: Node{
+			Type: "directory",
+			Entries: map[string]*Node{
 				"bin": {
-					Type: nar.TypeDirectory,
-					Entries: map[string]*ls.Node{
+					Type: "directory",
+					Entries: map[string]*Node{
 						"curl": {
-							Type:       nar.TypeRegular,
+							Type:       "regular",
 							Size:       182520,
 							Executable: true,
 							NAROffset:  400,

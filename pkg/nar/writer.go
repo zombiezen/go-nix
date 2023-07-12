@@ -1,337 +1,403 @@
 package nar
 
 import (
-	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
-
-	"github.com/nix-community/go-nix/pkg/wire"
+	"io/fs"
+	slashpath "path"
+	"strings"
 )
 
-// Writer provides sequential writing of a NAR (Nix Archive) file.
-// Writer.WriteHeader begins a new file with the provided Header,
-// and then Writer can be treated as an io.Writer to supply that
-// file's data.
+// ErrWriteTooLong is the error returned by [Writer.Write]
+// when more bytes are written tha declared in a file's Header.Size.
+var ErrWriteTooLong = errors.New("nar: write too long")
+
+const (
+	writerStateInit int8 = iota
+	writerStateRoot
+	writerStateFile
+	writerStateSpecial
+	writerStateEnd
+)
+
+// Writer provides sequential writing of a NAR archive.
+// [Writer.WriteHeader] begins a new file with the provided [Header],
+// and then Writer can be treated as an [io.Writer] to supply that file's data.
 type Writer struct {
-	w             io.Writer
-	contentWriter io.WriteCloser
+	w   io.Writer
+	err error
+	// buf is a temporary buffer used for writing.
+	// Its length is a multiple of stringAlign
+	// that is sufficient to hold any of the known tokens in the NAR format.
+	// It is larger than Reader's buffer because we use it to write names.
+	buf [64]byte
 
-	// channels used by the goroutine to communicate back to WriteHeader and Close.
-	doneWritingHeader chan struct{} // goroutine is done writing that header, WriteHeader() can return.
-	errors            chan error    // there were errors while writing
-
-	// whether we closed
-	closed bool
-
-	// this is used to send new headers to write to the emitter
-	headers chan *Header
+	state       int8
+	lastPathDir bool
+	padding     int8
+	remaining   int64
+	lastPath    string
 }
 
-// NewWriter creates a new Writer writing to w.
-func NewWriter(w io.Writer) (*Writer, error) {
-	// write magic
-	err := wire.WriteString(w, narVersionMagic1)
-	if err != nil {
-		return nil, err
-	}
-
-	narWriter := &Writer{
-		w: w,
-
-		doneWritingHeader: make(chan struct{}),
-		errors:            make(chan error),
-
-		closed: false,
-
-		headers: make(chan *Header),
-	}
-
-	// kick off the goroutine
-	go func() {
-		// wait for the first WriteHeader() call
-		header, ok := <-narWriter.headers
-		// immediate Close(), without ever calling WriteHeader()
-		// as an empty nar is invalid, we return an error
-		if !ok {
-			narWriter.errors <- fmt.Errorf("unexpected Close()")
-			close(narWriter.errors)
-
-			return
-		}
-
-		// ensure the first item received always has a "/" as path.
-		if header.Path != "/" {
-			narWriter.errors <- fmt.Errorf("first header always needs to have a / as path")
-			close(narWriter.errors)
-
-			return
-		}
-
-		excessHdr, err := narWriter.emitNode(header)
-		if err != nil {
-			narWriter.errors <- err
-		}
-
-		if excessHdr != nil {
-			narWriter.errors <- fmt.Errorf("additional header detected: %+v", excessHdr)
-		}
-
-		close(narWriter.errors)
-	}()
-
-	return narWriter, nil
+// NewWriter returns a new [Writer] writing to w.
+func NewWriter(w io.Writer) *Writer {
+	return &Writer{w: w}
 }
 
-// emitNode writes one NAR node. It'll internally consume one or more headers.
-// in case the header received a header that's not inside its own jurisdiction,
-// it'll return it, assuming an upper level will handle it.
-func (nw *Writer) emitNode(currentHeader *Header) (*Header, error) {
-	// write a opening (
-	err := wire.WriteString(nw.w, "(")
-	if err != nil {
-		return nil, err
+// WriteHeader writes hdr and prepares to accept the file's contents.
+// The Header.Size field determines how many bytes can be written for the next file.
+// If the current file is not fully written, then WriteHeader returns an error.
+// Any parent directories named in Header.Path that haven't been written yet
+// will automatically be written.
+//
+// If WriteHeader is called with a Header.Path that is
+// equal to or ordered lexicographically before the paths of previous calls to WriteHeader,
+// then WriteHeader will return an error.
+func (nw *Writer) WriteHeader(hdr *Header) (err error) {
+	if nw.err != nil {
+		return nw.err
+	}
+	if err := validatePath(hdr.Path); err != nil {
+		return fmt.Errorf("nar: %w", err)
 	}
 
-	// write type
-	err = wire.WriteString(nw.w, "type")
-	if err != nil {
-		return nil, err
+	switch nw.state {
+	case writerStateInit:
+		nw.write(magic)
+		nw.state = writerStateRoot
+		fallthrough
+	case writerStateRoot:
+		if hdr.Path != "" {
+			nw.write("(")
+			nw.write(typeToken)
+			nw.write(typeDirectory)
+			nw.lastPath = ""
+			nw.lastPathDir = true
+		}
+
+		if err := nw.node(hdr); err != nil {
+			return err
+		}
+		if hdr.Path == "" && hdr.Mode.Type() == fs.ModeSymlink {
+			nw.state = writerStateEnd
+			return nil
+		}
+	case writerStateFile:
+		if nw.lastPath == "" {
+			return fmt.Errorf("nar: archive root is a file")
+		}
+		if nw.remaining > 0 {
+			return fmt.Errorf("nar: %d bytes remaining on %s", nw.remaining, formatLastPath(nw.lastPath))
+		}
+		if err := nw.finishFile(); err != nil {
+			return err
+		}
+		nw.write(")") // finish directory entry
+
+		if err := nw.node(hdr); err != nil {
+			return err
+		}
+	case writerStateSpecial:
+		if err := nw.node(hdr); err != nil {
+			return err
+		}
+	case writerStateEnd:
+		return fmt.Errorf("nar: root file system object already written")
+	default:
+		panic("unreachable")
 	}
-
-	// store the current type in a var, we access it more often later.
-	currentType := currentHeader.Type
-
-	err = wire.WriteString(nw.w, currentType.String())
-	if err != nil {
-		return nil, err
-	}
-
-	if currentType == TypeRegular { //nolint:nestif
-		// if the executable bit is set…
-		if currentHeader.Executable {
-			// write the executable token.
-			err = wire.WriteString(nw.w, "executable")
-			if err != nil {
-				return nil, err
-			}
-
-			// write the placeholder
-			err = wire.WriteBytes(nw.w, []byte{})
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		// write the contents keyword
-		err = wire.WriteString(nw.w, "contents")
-		if err != nil {
-			return nil, err
-		}
-
-		nw.contentWriter, err = wire.NewBytesWriter(nw.w, uint64(currentHeader.Size))
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// The directory case doesn't write anything special after ( type directory .
-	// We need to inspect the next header before figuring out whether to list entries or not.
-	if currentType == TypeSymlink || currentType == TypeDirectory { //nolint:nestif
-		if currentType == TypeSymlink {
-			// write the target keyword
-			err = wire.WriteString(nw.w, "target")
-			if err != nil {
-				return nil, err
-			}
-
-			// write the target location. Make sure to convert slashes.
-			err = wire.WriteString(nw.w, filepath.ToSlash(currentHeader.LinkTarget))
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		// setup a dummy content write, that's not connected to the main writer,
-		// and will fail if you write anything to it.
-		var b bytes.Buffer
-
-		nw.contentWriter, err = wire.NewBytesWriter(&b, 0)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// return from WriteHeader()
-	nw.doneWritingHeader <- struct{}{}
-
-	// wait till we receive a new header
-	nextHeader, ok := <-nw.headers
-
-	// Close the content writer to finish the packet and write possible padding
-	// This is a no-op for symlinks and directories, as the contentWriter is limited to 0 bytes,
-	// and not connected to the main writer.
-	// The writer itself will already ensure we wrote the right amount of bytes
-	err = nw.contentWriter.Close()
-	if err != nil {
-		return nil, err
-	}
-
-	// if this was the last header, write the closing ) and return
-	if !ok {
-		err = wire.WriteString(nw.w, ")")
-		if err != nil {
-			return nil, err
-		}
-
-		return nil, err
-	}
-
-	// This is a loop, as nextHeader can either be what we received above,
-	// or in the case of a directory, something returned when recursing up.
-	for {
-		// if this was the last header, write the closing ) and return
-		if nextHeader == nil {
-			err = wire.WriteString(nw.w, ")")
-			if err != nil {
-				return nil, err
-			}
-
-			return nil, err
-		}
-
-		// compare Path of the received header.
-		// It needs to be lexicographically greater the previous one.
-		if !PathIsLexicographicallyOrdered(currentHeader.Path, nextHeader.Path) {
-			return nil, fmt.Errorf(
-				"received %v, which isn't lexicographically greater than the previous one %v",
-				nextHeader.Path,
-				currentHeader.Path,
-			)
-		}
-
-		// calculate the relative path between the previous and now-read header,
-		// which will become the new node name.
-		nodeName, err := filepath.Rel(currentHeader.Path, nextHeader.Path)
-		if err != nil {
-			return nil, err
-		}
-
-		// make sure we're using slashes
-		nodeName = filepath.ToSlash(nodeName)
-
-		// if the received header is something further up, or a sibling, we're done here.
-		if len(nodeName) > 2 && (nodeName[0:2] == "..") {
-			// write the closing )
-			err = wire.WriteString(nw.w, ")")
-			if err != nil {
-				return nil, err
-			}
-
-			// bounce further work up to above
-			return nextHeader, nil
-		}
-
-		// in other cases, it describes something below.
-		// This only works if we previously were in a directory.
-		if currentHeader.Type != TypeDirectory {
-			return nil, fmt.Errorf("received descending path %v, but we're a %v", nextHeader.Path, currentHeader.Type.String())
-		}
-
-		// ensure the name is valid. At this point, there should be no more slashes,
-		// as we already recursed up.
-		if !IsValidNodeName(nodeName) {
-			return nil, fmt.Errorf("name `%v` is invalid, as it contains a slash", nodeName)
-		}
-
-		// write the entry keyword
-		err = wire.WriteString(nw.w, "entry")
-		if err != nil {
-			return nil, err
-		}
-
-		// write a opening (
-		err = wire.WriteString(nw.w, "(")
-		if err != nil {
-			return nil, err
-		}
-
-		// write a opening name
-		err = wire.WriteString(nw.w, "name")
-		if err != nil {
-			return nil, err
-		}
-
-		// write the node name
-		err = wire.WriteString(nw.w, nodeName)
-		if err != nil {
-			return nil, err
-		}
-
-		// write the node keyword
-		err = wire.WriteString(nw.w, "node")
-		if err != nil {
-			return nil, err
-		}
-
-		// Emit the node inside. It'll consume another node, which is what we'll
-		// handle in the next loop iteration.
-		nextHeader, err = nw.emitNode(nextHeader)
-		if err != nil {
-			return nil, err
-		}
-
-		// write the closing ) (from entry)
-		err = wire.WriteString(nw.w, ")")
-		if err != nil {
-			return nil, err
-		}
-	}
-}
-
-// WriteHeader writes hdr and prepares to accept the file's contents. The
-// Header.Size determines how many bytes can be written for the next file. If
-// the current file is not fully written, then this returns an error. This
-// implicitly flushes any padding necessary before writing the header.
-func (nw *Writer) WriteHeader(hdr *Header) error {
-	if err := hdr.Validate(); err != nil {
-		return fmt.Errorf("unable to write header: %w", err)
-	}
-
-	nw.headers <- hdr
-	select {
-	case err := <-nw.errors:
-		return err
-	case <-nw.doneWritingHeader:
-	}
-
 	return nil
 }
 
-// Write writes to the current file in the NAR.
-// Write returns the ErrWriteTooLong if more than Header.Size bytes
-// are written after WriteHeader.
-//
-// Calling Write on special types like TypeLink, TypeSymlink, TypeChar,
-// TypeBlock, TypeDir, and TypeFifo returns (0, ErrWriteTooLong) regardless of
-// what the Header.Size claims.
-func (nw *Writer) Write(b []byte) (int, error) {
-	return nw.contentWriter.Write(b)
-}
-
-// Close closes the NAR file.
-// If the current file (from a prior call to WriteHeader) is not fully
-// written, then this returns an error.
-func (nw *Writer) Close() error {
-	if nw.closed {
-		return fmt.Errorf("already closed")
+func (nw *Writer) node(hdr *Header) error {
+	if hdr.Mode.IsRegular() && hdr.Size < 0 {
+		return fmt.Errorf("nar: %s: negative size", hdr.Path)
 	}
 
-	// signal the emitter this was the last one
-	close(nw.headers)
+	pop, newDirs, err := treeDelta(nw.lastPath, nw.lastPathDir, hdr.Path)
+	if err != nil {
+		return err
+	}
+	for i := 0; i < pop; i++ {
+		nw.write(")") // directory
+		nw.write(")") // parent's entry
+	}
+	for newDirs != "" {
+		name := firstPathComponent(newDirs)
+		nw.write(entryToken)
+		nw.write("(")
+		nw.write(nameToken)
+		nw.write(name)
+		nw.write(nodeToken)
+		nw.write("(")
+		nw.write(typeToken)
+		nw.write(typeDirectory)
 
-	nw.closed = true
+		newDirs = newDirs[len(name):]
+		if len(newDirs) >= len("/") {
+			newDirs = newDirs[len("/"):]
+		}
+	}
+	if hdr.Path != "" {
+		name := slashpath.Base(hdr.Path)
+		nw.write(entryToken)
+		nw.write("(")
+		nw.write(nameToken)
+		nw.write(name)
+		nw.write(nodeToken)
+	}
 
-	// wait for it to signal its done (by closing errors)
-	return <-nw.errors
+	switch hdr.Mode.Type() {
+	case 0: // regular
+		nw.write("(")
+		nw.write(typeToken)
+		nw.write(typeRegular)
+		if hdr.Mode&0o111 != 0 {
+			nw.write(executableToken)
+			nw.write("")
+		}
+		nw.write(contentsToken)
+		nw.writeInt(uint64(hdr.Size))
+		nw.state = writerStateFile
+		nw.remaining = hdr.Size
+		nw.padding = int8(stringPaddingLength(int(hdr.Size % stringAlign)))
+	case fs.ModeDir:
+		nw.write("(")
+		nw.write(typeToken)
+		nw.write(typeDirectory)
+		nw.state = writerStateSpecial
+	case fs.ModeSymlink:
+		nw.write("(")
+		nw.write(typeToken)
+		nw.write(typeSymlink)
+		nw.write(targetToken)
+		nw.write(hdr.LinkTarget)
+		nw.write(")")
+		if hdr.Path != "" {
+			nw.write(")")
+		}
+		nw.state = writerStateSpecial
+	default:
+		return fmt.Errorf("nar: %s: cannot support mode %v", hdr.Path, hdr.Mode)
+	}
+	nw.lastPath = hdr.Path
+	nw.lastPathDir = hdr.Mode.IsDir()
+	return nw.err
+}
+
+// Write writes to the current file in the NAR archive.
+// Write returns the error [ErrWriteTooLong]
+// if more than Header.Size bytes are written after WriteHeader.
+//
+// Calling Write on special types like [fs.ModeDir] and [fs.ModeSymlink]
+// returns (0, [ErrWriteTooLong]) regardless of what the Header.Size claims.
+func (nw *Writer) Write(p []byte) (n int, err error) {
+	if nw.state != writerStateFile || nw.remaining <= 0 {
+		return 0, ErrWriteTooLong
+	}
+	if nw.err != nil {
+		return 0, nw.err
+	}
+	tooLong := len(p) > int(nw.remaining)
+	if tooLong {
+		p = p[:nw.remaining]
+	}
+	if len(p) > 0 {
+		n, err = nw.w.Write(p)
+		if err == nil && tooLong {
+			err = ErrWriteTooLong
+		}
+	}
+	nw.remaining -= int64(n)
+	return n, err
+}
+
+// Close writes the footer of the NAR archive.
+// It does not close the underlying writer.
+// If the current file (from a prior call to [Writer.WriteHeader])
+// is not fully written, then Close returns an error.
+func (nw *Writer) Close() error {
+	if nw.err != nil {
+		return nw.err
+	}
+	switch nw.state {
+	case writerStateInit, writerStateRoot:
+		return fmt.Errorf("nar: close: no object written")
+	case writerStateFile:
+		if nw.remaining > 0 {
+			return fmt.Errorf("nar: close: %d bytes remaining on %s", nw.remaining, formatLastPath(nw.lastPath))
+		}
+		nw.finishFile()
+		if nw.lastPath != "" {
+			nw.write(")") // finish directory entry
+		}
+	case writerStateEnd:
+		nw.err = errors.New("nar: writer closed")
+		return nil
+	}
+
+	pop := strings.Count(nw.lastPath, "/")
+	if nw.lastPath != "" {
+		pop++
+	}
+	if nw.lastPathDir {
+		pop++
+	}
+	for i := 0; i < pop; i++ {
+		nw.write(")")
+	}
+
+	prevErr := nw.err
+	if nw.err == nil {
+		nw.err = errors.New("nar: writer closed")
+	}
+	return prevErr
+}
+
+func (nw *Writer) writeInt(x uint64) {
+	if nw.err != nil {
+		return
+	}
+	binary.LittleEndian.PutUint64(nw.buf[:8], x)
+	_, err := nw.w.Write(nw.buf[:8])
+	if err != nil {
+		nw.err = fmt.Errorf("nar: %w", err)
+	}
+}
+
+func (nw *Writer) write(s string) {
+	nw.writeInt(uint64(len(s)))
+	if len(s) == 0 || nw.err != nil {
+		return
+	}
+
+	if len(s) > len(nw.buf) {
+		// Less common case: string/token does not fit in buffer.
+		// Try to use WriteString if possible, otherwise multiple Writes.
+
+		if sw, ok := nw.w.(io.StringWriter); ok {
+			if _, err := sw.WriteString(s); err != nil {
+				nw.err = fmt.Errorf("nar: %w", err)
+				return
+			}
+		} else {
+			for i := 0; i < len(s); {
+				n := copy(nw.buf[:], s[i:])
+				if _, err := nw.w.Write(nw.buf[:n]); err != nil {
+					nw.err = fmt.Errorf("nar: %w", err)
+					return
+				}
+				i += n
+			}
+		}
+
+		if padding := stringPaddingLength(len(s)); padding > 0 {
+			for i := 0; i < padding; i++ {
+				nw.buf[i] = 0
+			}
+			if _, err := nw.w.Write(nw.buf[:padding]); err != nil {
+				nw.err = fmt.Errorf("nar: %w", err)
+			}
+		}
+		return
+	}
+
+	// Common case: string/token fits in buffer.
+	// Write string and padding in single Write.
+	copy(nw.buf[:], s)
+	n := padStringSize(len(s))
+	for i := len(s); i < n; i++ {
+		nw.buf[i] = 0
+	}
+	if _, err := nw.w.Write(nw.buf[:n]); err != nil {
+		nw.err = fmt.Errorf("nar: %w", err)
+	}
+}
+
+func (nw *Writer) finishFile() error {
+	if nw.err != nil {
+		return nw.err
+	}
+	if nw.padding > 0 {
+		for i := int8(0); i < nw.padding; i++ {
+			nw.buf[i] = 0
+		}
+		if _, err := nw.w.Write(nw.buf[:nw.padding]); err != nil {
+			nw.err = fmt.Errorf("nar: %w", err)
+		}
+	}
+	nw.write(")")
+	return nw.err
+}
+
+// treeDelta computes the directory ends (pops) and/or new directories to be created
+// in order to advance from one path to another.
+func treeDelta(oldPath string, oldIsDir bool, newPath string) (pop int, newDirs string, err error) {
+	newParent, _ := slashpath.Split(newPath)
+	if shared := oldPath + "/"; strings.HasPrefix(newPath, shared) {
+		if !oldIsDir {
+			return 0, "", fmt.Errorf("%s is not a directory", formatLastPath(oldPath))
+		}
+		newDirs = strings.TrimSuffix(newParent[len(shared):], "/")
+		return pop, strings.TrimSuffix(newDirs, "/"), nil
+	}
+
+	oldParent, _ := slashpath.Split(oldPath)
+	shared := oldParent
+	for ; !strings.HasPrefix(newParent, shared); pop++ {
+		shared, _ = slashpath.Split(strings.TrimSuffix(shared, "/"))
+	}
+
+	if oldPath != "" && newPath != "" {
+		newName := firstPathComponent(newPath[len(shared):])
+		oldName := firstPathComponent(oldPath[len(shared):])
+		if newName <= oldName {
+			return 0, "", fmt.Errorf("%s is not ordered after %s",
+				formatLastPath(newPath[:len(shared)+len(newName)]),
+				formatLastPath(oldPath[:len(shared)+len(oldName)]))
+		}
+	}
+
+	newDirs = strings.TrimSuffix(newParent[len(shared):], "/")
+	return pop, newDirs, nil
+}
+
+func firstPathComponent(path string) string {
+	i := strings.IndexByte(path, '/')
+	if i == -1 {
+		return path
+	}
+	return path[:i]
+}
+
+func formatLastPath(s string) string {
+	if s == "" {
+		return "<root filesystem object>"
+	}
+	return s
+}
+
+func validatePath(origPath string) error {
+	if origPath == "" {
+		return nil
+	}
+	path := origPath
+	for {
+		elemEnd := strings.IndexByte(path, '/')
+		if elemEnd == -1 {
+			elemEnd = len(path)
+		}
+		if path[:elemEnd] == "" {
+			return fmt.Errorf("%q has empty elements", origPath)
+		}
+		if err := validateFilename(path[:elemEnd]); err != nil {
+			return err
+		}
+		if elemEnd == len(path) {
+			return nil
+		}
+		path = path[elemEnd+1:]
+	}
 }
