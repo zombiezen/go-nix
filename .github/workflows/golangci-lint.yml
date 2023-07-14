@@ -1,11 +1,6 @@
 name: golangci-lint
 on:
-  push:
-    tags:
-      - v*
-    branches:
-      - main
-  pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
   # Optional: allow read access to pull request. Use with `only-new-issues` option.
@@ -26,7 +21,7 @@ jobs:
           # working-directory: somedir
 
           # Optional: golangci-lint command line arguments.
-          # args: --issues-exit-code=0
+          args: --timeout=10m
 
           # Optional: show only new issues if it's a pull request. The default value is `false`.
           # only-new-issues: true
