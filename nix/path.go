@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nix-community/go-nix/pkg/nixbase32"
+	"github.com/nix-community/go-nix/nixbase32"
 )
 
 // ParseStorePath parses an absolute slash-separated path as a [store path]

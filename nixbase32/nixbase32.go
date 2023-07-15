@@ -54,6 +54,30 @@ func Decode(dst, src []byte) (n int, err error) {
 	return maxDstSize, nil
 }
 
+// ValidateString returns an error if s is not valid nixbase32.
+func ValidateString(src string) error {
+	maxDstSize := DecodedLen(len(src))
+	for n := 0; n < len(src); n++ {
+		b := uint64(n) * 5
+		i := int(b / 8)
+		j := int(b % 8)
+
+		c := src[len(src)-n-1]
+		digit := strings.IndexByte(alphabet, c)
+		if digit == -1 {
+			return fmt.Errorf("decode base32: character %q not in Nix alphabet", c)
+		}
+
+		if i+1 >= maxDstSize {
+			if carry := byte(digit) >> (8 - j); carry != 0 {
+				// but have a nonzero carry, the encoding is invalid.
+				return fmt.Errorf("decode base32: non-zero padding")
+			}
+		}
+	}
+	return nil
+}
+
 // EncodedLen returns the length in bytes of the base32 encoding of an input
 // buffer of length n.
 func EncodedLen(n int) int {

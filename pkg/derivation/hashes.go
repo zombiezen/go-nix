@@ -6,8 +6,8 @@ import (
 	"fmt"
 	chash "hash"
 
+	"github.com/nix-community/go-nix/nixbase32"
 	"github.com/nix-community/go-nix/pkg/hash"
-	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"github.com/nix-community/go-nix/pkg/nixpath"
 )
 

@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/nix-community/go-nix/nix"
-	"github.com/nix-community/go-nix/pkg/nixbase32"
+	"github.com/nix-community/go-nix/nixbase32"
 )
 
 const (

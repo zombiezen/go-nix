@@ -104,6 +104,19 @@ func TestDecodedLen(t *testing.T) {
 	}
 }
 
+func TestValidateString(t *testing.T) {
+	for _, test := range tests {
+		if err := ValidateString(test.enc); err != nil {
+			t.Errorf("ValidateString(%q) = %v; want <nil>", test.enc, err)
+		}
+	}
+	for _, enc := range invalidEncodings {
+		if err := ValidateString(enc); err == nil {
+			t.Errorf("ValidateString(%q) = nil; want <error>", enc)
+		}
+	}
+}
+
 func TestIs(t *testing.T) {
 	for c := int16(0); c <= 0xff; c++ {
 		got := Is(byte(c))
@@ -120,8 +133,28 @@ func BenchmarkEncode(b *testing.B) {
 	for _, s := range sizes {
 		bytes := make([]byte, s)
 		rand.Read(bytes) //nolint:gosec
+		buf := make([]byte, EncodedLen(s))
 
 		b.Run(strconv.Itoa(s), func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(bytes)))
+			for i := 0; i < b.N; i++ {
+				Encode(buf, bytes)
+			}
+		})
+	}
+}
+
+func BenchmarkEncodeToString(b *testing.B) {
+	sizes := []int{32, 64, 128}
+
+	for _, s := range sizes {
+		bytes := make([]byte, s)
+		rand.Read(bytes) //nolint:gosec
+
+		b.Run(strconv.Itoa(s), func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(bytes)))
 			for i := 0; i < b.N; i++ {
 				EncodeToString(bytes)
 			}
@@ -135,11 +168,55 @@ func BenchmarkDecode(b *testing.B) {
 	for _, s := range sizes {
 		bytes := make([]byte, s)
 		rand.Read(bytes) //nolint:gosec
+		input := make([]byte, EncodedLen(s))
+		Encode(input, bytes)
+
+		b.Run(strconv.Itoa(s), func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(input)))
+			for i := 0; i < b.N; i++ {
+				if _, err := Decode(bytes, input); err != nil {
+					b.Fatal("error: %w", err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkDecodeString(b *testing.B) {
+	sizes := []int{32, 64, 128}
+
+	for _, s := range sizes {
+		bytes := make([]byte, s)
+		rand.Read(bytes) //nolint:gosec
 		input := EncodeToString(bytes)
 
 		b.Run(strconv.Itoa(s), func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(input)))
 			for i := 0; i < b.N; i++ {
 				_, err := DecodeString(input)
+				if err != nil {
+					b.Fatal("error: %w", err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkValidateString(b *testing.B) {
+	sizes := []int{32, 64, 128}
+
+	for _, s := range sizes {
+		bytes := make([]byte, s)
+		rand.Read(bytes) //nolint:gosec
+		input := EncodeToString(bytes)
+
+		b.Run(strconv.Itoa(s), func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(input)))
+			for i := 0; i < b.N; i++ {
+				err := ValidateString(input)
 				if err != nil {
 					b.Fatal("error: %w", err)
 				}

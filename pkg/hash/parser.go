@@ -6,7 +6,7 @@ import (
 
 	mh "github.com/multiformats/go-multihash/core"
 	"github.com/nix-community/go-nix/nix"
-	"github.com/nix-community/go-nix/pkg/nixbase32"
+	"github.com/nix-community/go-nix/nixbase32"
 )
 
 //nolint:gochecknoglobals
