@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	slashpath "path"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,28 +30,43 @@ func List(r io.Reader) (*Listing, error) {
 			return ls, fmt.Errorf("index nar: %w", err)
 		}
 
-		curr := &ls.Root
-		for p := hdr.Path; p != ""; {
-			i := strings.IndexByte(p, '/')
-			end := i + 1
-			if i < 0 {
-				i = len(p)
-				end = i
-			}
-			name := p[:i]
+		if hdr.Path == "" {
+			ls.Root.Header = *hdr
+		} else {
+			parent, name := slashpath.Split(hdr.Path)
+			parent = strings.TrimSuffix(parent, "/")
+			curr := ls.lookup(parent)
 			if curr.Entries == nil {
 				curr.Entries = make(map[string]*ListingNode)
 			}
-			next := curr.Entries[name]
-			if next == nil {
-				next = new(ListingNode)
-				curr.Entries[name] = next
-			}
-			curr = next
-			p = p[end:]
+			curr.Entries[name] = &ListingNode{Header: *hdr}
 		}
-		curr.Header = *hdr
 	}
+}
+
+// lookup returns the node for the given path or nil if not found.
+// The path is assumed to be an unrooted, slash-separated sequence of path elements,
+// like "x/y/z".
+// Path should not contain elements that are "." or ".." or the empty string,
+// except for the special case that the root of the archive is the empty string.
+func (ls *Listing) lookup(path string) *ListingNode {
+	curr := &ls.Root
+	for path != "" {
+		i := strings.IndexByte(path, '/')
+		end := i + 1
+		if i < 0 {
+			i = len(path)
+			end = i
+		}
+		name := path[:i]
+		next := curr.Entries[name]
+		if next == nil {
+			return nil
+		}
+		curr = next
+		path = path[end:]
+	}
+	return curr
 }
 
 // MarshalJSON encodes a listing to JSON.
