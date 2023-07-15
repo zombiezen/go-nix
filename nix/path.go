@@ -10,25 +10,7 @@ import (
 	"github.com/nix-community/go-nix/nixbase32"
 )
 
-// ParseStorePath parses an absolute slash-separated path as a [store path]
-// (i.e. an immediate child of a Nix store directory)
-// and returns the directory and store object name.
-//
-// [store path]: https://nixos.org/manual/nix/stable/glossary.html#gloss-store-path
-func ParseStorePath(path string) (StoreDirectory, ObjectName, error) {
-	if !slashpath.IsAbs(path) {
-		return "", "", fmt.Errorf("parse nix store path %s: not absolute", path)
-	}
-	dir, base := slashpath.Split(path)
-	dir = slashpath.Clean(dir)
-	name, err := ParseObjectName(base)
-	if err != nil {
-		return StoreDirectory(dir), "", fmt.Errorf("parse nix store path %s: %v", path, err)
-	}
-	return StoreDirectory(dir), name, nil
-}
-
-// StoreDirectory is the location of a Nix store in the local filesystem.
+// StoreDirectory is the absolute path of a Nix store in the local filesystem.
 type StoreDirectory string
 
 // DefaultStoreDirectory is the default Nix store directory.
@@ -48,17 +30,31 @@ func StoreDirectoryFromEnv() (StoreDirectory, error) {
 	return StoreDirectory(filepath.Clean(dir)), nil
 }
 
-// Path returns the store path for the given store object name.
-func (dir StoreDirectory) Path(name ObjectName) string {
-	return slashpath.Join(string(dir), string(name))
+// Object returns the store path for the given store object name.
+func (dir StoreDirectory) Object(name string) (StorePath, error) {
+	joined := dir.Join(name)
+	if name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
+		return "", fmt.Errorf("parse nix store path %s: invalid object name %q", joined, name)
+	}
+	storePath, err := ParseStorePath(joined)
+	if err != nil {
+		return "", err
+	}
+	return storePath, nil
+}
+
+// Join joins any number of path elements to the store directory
+// separated by slashes.
+func (dir StoreDirectory) Join(elem ...string) string {
+	return slashpath.Join(append([]string{string(dir)}, elem...)...)
 }
 
 // ParsePath verifies that a given absolute slash-separated path
-// is begins with the store directory
+// begins with the store directory
 // and names either a store object or a file inside a store object.
 // On success, it returns the store object's name
 // and the relative path inside the store object, if any.
-func (dir StoreDirectory) ParsePath(path string) (name ObjectName, sub string, err error) {
+func (dir StoreDirectory) ParsePath(path string) (storePath StorePath, sub string, err error) {
 	if !slashpath.IsAbs(string(dir)) {
 		return "", "", fmt.Errorf("parse nix store path %s: directory %s not absolute", path, dir)
 	}
@@ -72,70 +68,114 @@ func (dir StoreDirectory) ParsePath(path string) (name ObjectName, sub string, e
 		return "", "", fmt.Errorf("parse nix store path %s: outside %s", path, dir)
 	}
 	childName, sub, _ := strings.Cut(tail, "/")
-	name, err = ParseObjectName(childName)
+	storePath, err = ParseStorePath(cleaned[:len(dirPrefix)+len(childName)])
 	if err != nil {
-		return "", "", fmt.Errorf("parse nix store path %s: %v", path, err)
+		return "", "", err
 	}
-	return name, sub, nil
+	return storePath, sub, nil
 }
 
-// ObjectName is the file name of a Nix [store object].
-// It includes both a hash and a human-readable name,
-// but no leading directory.
-// For example: "s66mzxpvicwk07gjbjfw9izjfa797vsw-hello-2.12.1".
+// StorePath is a Nix [store path]:
+// the absolute path of a Nix [store object] in the filesystem.
+// For example: "/nix/store/s66mzxpvicwk07gjbjfw9izjfa797vsw-hello-2.12.1".
 //
 // [store object]: https://nixos.org/manual/nix/stable/glossary.html#gloss-store-object
-type ObjectName string
+// [store path]: https://nixos.org/manual/nix/stable/glossary.html#gloss-store-path
+type StorePath string
 
 const (
-	objectNameHashLength = 32
-	maxObjectNameLength  = objectNameHashLength + 1 + 211
+	objectNameDigestLength = 32
+	maxObjectNameLength    = objectNameDigestLength + 1 + 211
 )
 
-// ParseObjectName validates a string as the file name of a Nix store object,
-// returning the error encountered if any.
-func ParseObjectName(name string) (ObjectName, error) {
-	if len(name) < objectNameHashLength+len("-")+1 {
-		return "", fmt.Errorf("parse nix store object name: %q is too short", name)
+// ParseStorePath parses an absolute slash-separated path as a [store path]
+// (i.e. an immediate child of a Nix store directory)
+// and returns the directory and store object name.
+//
+// [store path]: https://nixos.org/manual/nix/stable/glossary.html#gloss-store-path
+func ParseStorePath(path string) (StorePath, error) {
+	if !slashpath.IsAbs(path) {
+		return "", fmt.Errorf("parse nix store path %s: not absolute", path)
 	}
-	if len(name) > maxObjectNameLength {
-		return "", fmt.Errorf("parse nix store object name: %q is too long", name)
+	cleaned := slashpath.Clean(path)
+	_, base := slashpath.Split(cleaned)
+	if len(base) < objectNameDigestLength+len("-")+1 {
+		return "", fmt.Errorf("parse nix store path %s: %q is too short", path, base)
 	}
-	for i := 0; i < len(name); i++ {
-		if !isNameChar(name[i]) {
-			return "", fmt.Errorf("parse nix store object name: %q contains illegal character %q", name, name[i])
+	if len(base) > maxObjectNameLength {
+		return "", fmt.Errorf("parse nix store path %s: %q is too long", path, base)
+	}
+	for i := 0; i < len(base); i++ {
+		if !isNameChar(base[i]) {
+			return "", fmt.Errorf("parse nix store path %s: %q contains illegal character %q", path, base, base[i])
 		}
 	}
-	for i := 0; i < objectNameHashLength; i++ {
-		if !nixbase32.Is(name[i]) {
-			return "", fmt.Errorf("parse nix store object name: %q contains illegal base-32 character %q", name, name[i])
-		}
+	if err := nixbase32.ValidateString(base[:objectNameDigestLength]); err != nil {
+		return "", fmt.Errorf("parse nix store path %s: %v", path, err)
 	}
-	if name[objectNameHashLength] != '-' {
-		return "", fmt.Errorf("parse nix store object name: %q does not separate hash with dash", name)
+	if base[objectNameDigestLength] != '-' {
+		return "", fmt.Errorf("parse nix store path %s: digest not separated by dash", path)
 	}
-	return ObjectName(name), nil
+	return StorePath(cleaned), nil
+}
+
+// Dir returns the path's directory.
+func (path StorePath) Dir() StoreDirectory {
+	if path == "" {
+		return ""
+	}
+	return StoreDirectory(slashpath.Dir(string(path)))
+}
+
+// Base returns the last element of the path.
+func (path StorePath) Base() string {
+	if path == "" {
+		return ""
+	}
+	return slashpath.Base(string(path))
 }
 
 // IsDerivation reports whether the name ends in ".drv".
-func (name ObjectName) IsDerivation() bool {
-	return strings.HasSuffix(string(name), ".drv")
+func (path StorePath) IsDerivation() bool {
+	return strings.HasSuffix(path.Base(), ".drv")
 }
 
-// Hash returns the hash part of the name.
-func (name ObjectName) Hash() string {
-	if len(name) < objectNameHashLength {
+// Digest returns the digest part of the name.
+func (path StorePath) Digest() string {
+	base := path.Base()
+	if len(base) < objectNameDigestLength {
 		return ""
 	}
-	return string(name[:objectNameHashLength])
+	return string(base[:objectNameDigestLength])
 }
 
-// Name returns the part of the name after the hash.
-func (name ObjectName) Name() string {
-	if len(name) <= objectNameHashLength+len("-") {
+// Name returns the part of the name after the digest.
+func (path StorePath) Name() string {
+	base := path.Base()
+	if len(base) <= objectNameDigestLength+len("-") {
 		return ""
 	}
-	return string(name[objectNameHashLength+len("-"):])
+	return string(base[objectNameDigestLength+len("-"):])
+}
+
+// MarshalText returns a byte slice of the path
+// or an error if it's empty.
+func (path StorePath) MarshalText() ([]byte, error) {
+	if path == "" {
+		return nil, fmt.Errorf("marshal nix store path: empty")
+	}
+	return []byte(path), nil
+}
+
+// UnmarshalText validates and cleans the path in the same way as [ParseStorePath]
+// and stores it into *path.
+func (path *StorePath) UnmarshalText(data []byte) error {
+	var err error
+	*path, err = ParseStorePath(string(data))
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func cutPrefix(s, prefix string) (after string, found bool) {

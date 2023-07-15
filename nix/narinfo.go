@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	slashpath "path"
 	"sort"
 	"strconv"
 )
@@ -20,7 +19,7 @@ type NARInfo struct {
 	// StorePath is the absolute path of this store object
 	// (e.g. "/nix/store/s66mzxpvicwk07gjbjfw9izjfa797vsw-hello-2.12.1").
 	// Nix requires this field to be set.
-	StorePath string
+	StorePath StorePath
 	// URL is the path to download to the (possibly compressed) .nar file,
 	// relative to the .narinfo file's directory.
 	// Nix requires this field to be set.
@@ -43,10 +42,10 @@ type NARInfo struct {
 	// Nix requires this field to be set.
 	NARSize int64
 	// References is the set of other store objects that this store object references.
-	References []ObjectName
+	References []StorePath
 	// Deriver is the name of the store object that is the store derivation
 	// of this store object.
-	Deriver ObjectName
+	Deriver StorePath
 	// System is a deprecated field.
 	//
 	// Deprecated: Ignore this field.
@@ -61,20 +60,14 @@ type NARInfo struct {
 func (info *NARInfo) Clone() *NARInfo {
 	info2 := new(NARInfo)
 	*info2 = *info
-	info.References = append([]ObjectName(nil), info.References...)
+	info.References = append([]StorePath(nil), info.References...)
 	info.Sig = append([]*Signature(nil), info.Sig...)
 	return info
 }
 
 // Directory returns the store directory of the store object.
 func (info *NARInfo) StoreDirectory() StoreDirectory {
-	return StoreDirectory(slashpath.Dir(info.StorePath))
-}
-
-// ObjectName returns the base name of the store path.
-func (info *NARInfo) ObjectName() ObjectName {
-	_, name, _ := ParseStorePath(info.StorePath)
-	return name
+	return info.StorePath.Dir()
 }
 
 // IsValid reports whether the NAR information fields are valid.
@@ -100,7 +93,7 @@ func (info *NARInfo) validateForFingerprint() error {
 	if info.StorePath == "" {
 		return fmt.Errorf("store path empty")
 	}
-	if _, _, err := ParseStorePath(info.StorePath); err != nil {
+	if _, err := ParseStorePath(string(info.StorePath)); err != nil {
 		return fmt.Errorf("store path: %v", err)
 	}
 	if info.NARHash.IsZero() {
@@ -111,6 +104,11 @@ func (info *NARInfo) validateForFingerprint() error {
 	}
 	if info.NARSize < 0 {
 		return fmt.Errorf("negative nar size")
+	}
+	for _, ref := range info.References {
+		if ref != "" && ref.Dir() != info.StorePath.Dir() {
+			return fmt.Errorf("reference directory = %q (expect %q)", ref.Dir(), info.StorePath.Dir())
+		}
 	}
 	return nil
 }
@@ -140,6 +138,10 @@ func (info *NARInfo) validate() error {
 		}
 	}
 
+	if info.Deriver != "" && info.Deriver.Dir() != info.StorePath.Dir() {
+		return fmt.Errorf("deriver directory = %q (expect %q)", info.Deriver.Dir(), info.StorePath.Dir())
+	}
+
 	return nil
 }
 
@@ -153,7 +155,7 @@ func (info *NARInfo) WriteFingerprint(w io.Writer) error {
 	if _, err := io.WriteString(w, "1;"); err != nil {
 		return fmt.Errorf("compute nix store object fingerprint for %s: %w", info.StorePath, err)
 	}
-	if _, err := io.WriteString(w, info.StorePath); err != nil {
+	if _, err := io.WriteString(w, string(info.StorePath)); err != nil {
 		return fmt.Errorf("compute nix store object fingerprint for %s: %w", info.StorePath, err)
 	}
 	if _, err := io.WriteString(w, ";"); err != nil {
@@ -172,11 +174,10 @@ func (info *NARInfo) WriteFingerprint(w io.Writer) error {
 		return fmt.Errorf("compute nix store object fingerprint for %s: %w", info.StorePath, err)
 	}
 
-	sortedRefs := append([]ObjectName(nil), info.References...)
+	sortedRefs := append([]StorePath(nil), info.References...)
 	sort.Slice(sortedRefs, func(i, j int) bool {
 		return sortedRefs[i] < sortedRefs[j]
 	})
-	storeDir := info.StoreDirectory()
 	for i, ref := range sortedRefs {
 		if i > 0 {
 			if ref == sortedRefs[i-1] {
@@ -187,7 +188,7 @@ func (info *NARInfo) WriteFingerprint(w io.Writer) error {
 				return fmt.Errorf("compute nix store object fingerprint for %s: %w", info.StorePath, err)
 			}
 		}
-		if _, err := io.WriteString(w, storeDir.Path(ref)); err != nil {
+		if _, err := io.WriteString(w, string(ref)); err != nil {
 			return fmt.Errorf("compute nix store object fingerprint for %s: %w", info.StorePath, err)
 		}
 	}
@@ -205,7 +206,10 @@ func (info *NARInfo) UnmarshalText(src []byte) (err error) {
 
 	newline := []byte("\n")
 	*info = NARInfo{}
-	hasReferences := false
+	var references [][]byte
+	var referencesLineno int
+	var deriverObject string
+	var deriverLineno int
 	for lineno := 1; len(src) > 0; lineno++ {
 		i := bytes.IndexByte(src, ':')
 		if i < 0 {
@@ -227,12 +231,13 @@ func (info *NARInfo) UnmarshalText(src []byte) (err error) {
 			if info.StorePath != "" {
 				return fmt.Errorf("line %d: duplicate StorePath", lineno)
 			}
-			info.StorePath = string(value)
-			if info.StorePath == "" {
+			if len(value) == 0 {
 				return fmt.Errorf("line %d: empty StorePath", lineno)
 			}
-			if !slashpath.IsAbs(info.StorePath) {
-				return fmt.Errorf("line %d: store path %q not absolute", lineno, info.StorePath)
+			var err error
+			info.StorePath, err = ParseStorePath(string(value))
+			if err != nil {
+				return fmt.Errorf("line %d: %v", lineno, err)
 			}
 		case "URL":
 			if info.URL != "" {
@@ -289,28 +294,17 @@ func (info *NARInfo) UnmarshalText(src []byte) (err error) {
 				return fmt.Errorf("line %d: NarSize is non-positive", lineno)
 			}
 		case "References":
-			if hasReferences {
+			if referencesLineno > 0 {
 				return fmt.Errorf("line %d: duplicate References", lineno)
 			}
-			hasReferences = true
-			words := bytes.Fields(value)
-			info.References = make([]ObjectName, 0, len(words))
-			for _, w := range words {
-				name, err := ParseObjectName(string(w))
-				if err != nil {
-					return fmt.Errorf("line %d: References: %v", lineno, err)
-				}
-				info.References = append(info.References, name)
-			}
+			references = bytes.Fields(value)
+			referencesLineno = lineno
 		case "Deriver":
 			if info.Deriver != "" {
 				return fmt.Errorf("line %d: duplicate Deriver", lineno)
 			}
-			var err error
-			info.Deriver, err = ParseObjectName(string(value))
-			if err != nil {
-				return fmt.Errorf("line %d: Deriver: %v", lineno, err)
-			}
+			deriverObject = string(value)
+			deriverLineno = lineno
 		case "System":
 			if info.System != "" {
 				return fmt.Errorf("line %d: duplicate System", lineno)
@@ -341,6 +335,27 @@ func (info *NARInfo) UnmarshalText(src []byte) (err error) {
 		}
 		if info.FileSize == 0 {
 			info.FileSize = info.NARSize
+		}
+	}
+
+	if info.StorePath == "" {
+		return fmt.Errorf("store path empty")
+	}
+	if deriverLineno > 0 {
+		var err error
+		info.Deriver, err = info.StoreDirectory().Object(deriverObject)
+		if err != nil {
+			return fmt.Errorf("line %d: Deriver: %v", deriverLineno, err)
+		}
+	}
+	if len(references) > 0 {
+		info.References = make([]StorePath, 0, len(references))
+		for _, w := range references {
+			ref, err := info.StoreDirectory().Object(string(w))
+			if err != nil {
+				return fmt.Errorf("line %d: References: %v", referencesLineno, err)
+			}
+			info.References = append(info.References, ref)
 		}
 	}
 
@@ -380,12 +395,12 @@ func (info *NARInfo) MarshalText() ([]byte, error) {
 		buf = append(buf, "\nReferences:"...)
 		for _, ref := range info.References {
 			buf = append(buf, ' ')
-			buf = append(buf, ref...)
+			buf = append(buf, ref.Base()...)
 		}
 	}
 	if info.Deriver != "" {
 		buf = append(buf, "\nDeriver: "...)
-		buf = append(buf, info.Deriver...)
+		buf = append(buf, info.Deriver.Base()...)
 	}
 	if info.System != "" {
 		buf = append(buf, "\nSystem: "...)
