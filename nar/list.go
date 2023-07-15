@@ -3,15 +3,54 @@ package nar
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // Listing is the parsed representation of a ".ls" file,
 // an index of a NAR file.
 type Listing struct {
 	Root ListingNode
+}
+
+// List indexes a NAR file.
+func List(r io.Reader) (*Listing, error) {
+	nr := NewReader(r)
+	ls := new(Listing)
+	for {
+		hdr, err := nr.Next()
+		if err == io.EOF {
+			return ls, nil
+		}
+		if err != nil {
+			return ls, fmt.Errorf("index nar: %w", err)
+		}
+
+		curr := &ls.Root
+		for p := hdr.Path; p != ""; {
+			i := strings.IndexByte(p, '/')
+			end := i + 1
+			if i < 0 {
+				i = len(p)
+				end = i
+			}
+			name := p[:i]
+			if curr.Entries == nil {
+				curr.Entries = make(map[string]*ListingNode)
+			}
+			next := curr.Entries[name]
+			if next == nil {
+				next = new(ListingNode)
+				curr.Entries[name] = next
+			}
+			curr = next
+			p = p[end:]
+		}
+		curr.Header = *hdr
+	}
 }
 
 // MarshalJSON encodes a listing to JSON.

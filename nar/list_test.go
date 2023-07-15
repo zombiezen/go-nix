@@ -4,11 +4,36 @@ import (
 	"bytes"
 	"encoding/json"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 )
+
+func TestList(t *testing.T) {
+	for _, test := range narTests {
+		if test.err {
+			continue
+		}
+		t.Run(test.name, func(t *testing.T) {
+			f, err := os.Open(filepath.Join("testdata", test.dataFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+
+			got, err := List(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(&test.wantList, got, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("-want +got:\n%s", diff)
+			}
+		})
+	}
+}
 
 const testListingJSON = `
 {

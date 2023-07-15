@@ -28,6 +28,7 @@ var narTests = []struct {
 	name           string
 	dataFile       string
 	want           []testEntry
+	wantList       Listing
 	ignoreContents bool
 	err            bool
 }{
@@ -44,6 +45,13 @@ var narTests = []struct {
 				},
 			},
 		},
+		wantList: Listing{Root: ListingNode{
+			Header: Header{
+				Mode:          0o444,
+				Size:          0,
+				ContentOffset: 96,
+			},
+		}},
 	},
 	{
 		name:     "OneByteFile",
@@ -59,6 +67,13 @@ var narTests = []struct {
 				data: "\x01",
 			},
 		},
+		wantList: Listing{Root: ListingNode{
+			Header: Header{
+				Mode:          0o444,
+				Size:          1,
+				ContentOffset: 96,
+			},
+		}},
 	},
 	{
 		name:     "EmptyDirectory",
@@ -66,11 +81,15 @@ var narTests = []struct {
 		want: []testEntry{
 			{
 				header: &Header{
-					Path: "",
 					Mode: fs.ModeDir | 0o555,
 				},
 			},
 		},
+		wantList: Listing{Root: ListingNode{
+			Header: Header{
+				Mode: fs.ModeDir | 0o555,
+			},
+		}},
 	},
 	{
 		name:     "TextFile",
@@ -78,7 +97,6 @@ var narTests = []struct {
 		want: []testEntry{
 			{
 				header: &Header{
-					Path:          "",
 					Mode:          0o444,
 					Size:          int64(len(helloWorld)),
 					ContentOffset: 96,
@@ -86,6 +104,13 @@ var narTests = []struct {
 				data: helloWorld,
 			},
 		},
+		wantList: Listing{Root: ListingNode{
+			Header: Header{
+				Mode:          0o444,
+				Size:          int64(len(helloWorld)),
+				ContentOffset: 96,
+			},
+		}},
 	},
 	{
 		name:     "Script",
@@ -93,7 +118,6 @@ var narTests = []struct {
 		want: []testEntry{
 			{
 				header: &Header{
-					Path:          "",
 					Mode:          0o555,
 					Size:          int64(len(helloWorldScriptData)),
 					ContentOffset: 128,
@@ -101,6 +125,13 @@ var narTests = []struct {
 				data: helloWorldScriptData,
 			},
 		},
+		wantList: Listing{Root: ListingNode{
+			Header: Header{
+				Mode:          0o555,
+				Size:          int64(len(helloWorldScriptData)),
+				ContentOffset: 128,
+			},
+		}},
 	},
 	{
 		name:     "Symlink",
@@ -108,12 +139,17 @@ var narTests = []struct {
 		want: []testEntry{
 			{
 				header: &Header{
-					Path:       "",
 					Mode:       fs.ModeSymlink | 0o777,
 					LinkTarget: "/nix/store/somewhereelse",
 				},
 			},
 		},
+		wantList: Listing{Root: ListingNode{
+			Header: Header{
+				Mode:       fs.ModeSymlink | 0o777,
+				LinkTarget: "/nix/store/somewhereelse",
+			},
+		}},
 	},
 	{
 		name:     "Tree",
@@ -121,7 +157,6 @@ var narTests = []struct {
 		want: []testEntry{
 			{
 				header: &Header{
-					Path: "",
 					Mode: fs.ModeDir | 0o555,
 				},
 			},
@@ -159,6 +194,39 @@ var narTests = []struct {
 				data: helloWorld,
 			},
 		},
+		wantList: Listing{Root: ListingNode{
+			Header: Header{
+				Mode: fs.ModeDir | 0o555,
+			},
+			Entries: map[string]*ListingNode{
+				"a.txt": {Header: Header{
+					Path:          "a.txt",
+					Mode:          0o444,
+					Size:          4,
+					ContentOffset: 232,
+				}},
+				"bin": {
+					Header: Header{
+						Path: "bin",
+						Mode: fs.ModeDir | 0o555,
+					},
+					Entries: map[string]*ListingNode{
+						"hello.sh": {Header: Header{
+							Path:          "bin/hello.sh",
+							Mode:          0o555,
+							Size:          int64(len(miniDRVScriptData)),
+							ContentOffset: 592,
+						}},
+					},
+				},
+				"hello.txt": {Header: Header{
+					Path:          "hello.txt",
+					Mode:          0o444,
+					Size:          int64(len(helloWorld)),
+					ContentOffset: 864,
+				}},
+			},
+		}},
 	},
 	{
 		name:     "NestedDirAndCommonPrefix",
@@ -190,6 +258,31 @@ var narTests = []struct {
 				},
 			},
 		},
+		wantList: Listing{Root: ListingNode{
+			Header: Header{
+				Mode: fs.ModeDir | 0o555,
+			},
+			Entries: map[string]*ListingNode{
+				"foo": {
+					Header: Header{
+						Path: "foo",
+						Mode: fs.ModeDir | 0o555,
+					},
+					Entries: map[string]*ListingNode{
+						"b": {Header: Header{
+							Path:       "foo/b",
+							Mode:       fs.ModeSymlink | 0o777,
+							LinkTarget: "foo",
+						}},
+					},
+				},
+				"foo-a": {Header: Header{
+					Path:       "foo-a",
+					Mode:       fs.ModeSymlink | 0o777,
+					LinkTarget: "foo",
+				}},
+			},
+		}},
 	},
 	{
 		name:           "SmokeTest",
@@ -387,6 +480,224 @@ var narTests = []struct {
 				ContentOffset: 462560,
 			}},
 		},
+		wantList: Listing{Root: ListingNode{
+			Header: Header{
+				Mode: fs.ModeDir | 0o555,
+			},
+			Entries: map[string]*ListingNode{
+				"bin": {
+					Header: Header{
+						Path: "bin",
+						Mode: fs.ModeDir | 0o555,
+					},
+					Entries: map[string]*ListingNode{
+						"arp": {Header: Header{
+							Path:          "bin/arp",
+							Mode:          0o555,
+							Size:          55288,
+							ContentOffset: 400,
+						}},
+						"dnsdomainname": {Header: Header{
+							Path:       "bin/dnsdomainname",
+							Mode:       fs.ModeSymlink | 0o777,
+							LinkTarget: "hostname",
+						}},
+						"domainname": {Header: Header{
+							Path:       "bin/domainname",
+							Mode:       fs.ModeSymlink | 0o777,
+							LinkTarget: "hostname",
+						}},
+						"hostname": {Header: Header{
+							Path:          "bin/hostname",
+							Mode:          0o555,
+							Size:          17704,
+							ContentOffset: 56304,
+						}},
+						"ifconfig": {Header: Header{
+							Path:          "bin/ifconfig",
+							Mode:          0o555,
+							Size:          72576,
+							ContentOffset: 74224,
+						}},
+						"nameif": {Header: Header{
+							Path:          "bin/nameif",
+							Mode:          0o555,
+							Size:          18776,
+							ContentOffset: 147016,
+						}},
+						"netstat": {Header: Header{
+							Path:          "bin/netstat",
+							Mode:          0o555,
+							Size:          131784,
+							ContentOffset: 166008,
+						}},
+						"nisdomainname": {Header: Header{
+							Path:       "bin/nisdomainname",
+							Mode:       fs.ModeSymlink | 0o777,
+							LinkTarget: "hostname",
+						}},
+						"plipconfig": {Header: Header{
+							Path:          "bin/plipconfig",
+							Mode:          0o555,
+							Size:          13160,
+							ContentOffset: 298216,
+						}},
+						"rarp": {Header: Header{
+							Path:          "bin/rarp",
+							Mode:          0o555,
+							Size:          30384,
+							ContentOffset: 311592,
+						}},
+						"route": {Header: Header{
+							Path:          "bin/route",
+							Mode:          0o555,
+							Size:          61928,
+							ContentOffset: 342192,
+						}},
+						"slattach": {Header: Header{
+							Path:          "bin/slattach",
+							Mode:          0o555,
+							Size:          35672,
+							ContentOffset: 404336,
+						}},
+						"ypdomainname": {Header: Header{
+							Path:       "bin/ypdomainname",
+							Mode:       fs.ModeSymlink | 0o777,
+							LinkTarget: "hostname",
+						}},
+					},
+				},
+				"sbin": {Header: Header{
+					Path:       "sbin",
+					Mode:       fs.ModeSymlink | 0o777,
+					LinkTarget: "bin",
+				}},
+				"share": {
+					Header: Header{
+						Path: "share",
+						Mode: fs.ModeDir | 0o555,
+					},
+					Entries: map[string]*ListingNode{
+						"man": {
+							Header: Header{
+								Path: "share/man",
+								Mode: fs.ModeDir | 0o555,
+							},
+							Entries: map[string]*ListingNode{
+								"man1": {
+									Header: Header{
+										Path: "share/man/man1",
+										Mode: fs.ModeDir | 0o555,
+									},
+									Entries: map[string]*ListingNode{
+										"dnsdomainname.1.gz": {Header: Header{
+											Path:          "share/man/man1/dnsdomainname.1.gz",
+											Mode:          0o444,
+											Size:          40,
+											ContentOffset: 441040,
+										}},
+										"domainname.1.gz": {Header: Header{
+											Path:          "share/man/man1/domainname.1.gz",
+											Mode:          0o444,
+											Size:          40,
+											ContentOffset: 441272,
+										}},
+										"hostname.1.gz": {Header: Header{
+											Path:          "share/man/man1/hostname.1.gz",
+											Mode:          0o444,
+											Size:          1660,
+											ContentOffset: 441504,
+										}},
+										"nisdomainname.1.gz": {Header: Header{
+											Path:          "share/man/man1/nisdomainname.1.gz",
+											Mode:          0o444,
+											Size:          40,
+											ContentOffset: 443368,
+										}},
+										"ypdomainname.1.gz": {Header: Header{
+											Path:          "share/man/man1/ypdomainname.1.gz",
+											Mode:          0o444,
+											Size:          40,
+											ContentOffset: 443608,
+										}},
+									},
+								},
+								"man5": {
+									Header: Header{
+										Path: "share/man/man5",
+										Mode: fs.ModeDir | 0o555,
+									},
+									Entries: map[string]*ListingNode{
+										"ethers.5.gz": {Header: Header{
+											Path:          "share/man/man5/ethers.5.gz",
+											Mode:          0o444,
+											Size:          563,
+											ContentOffset: 444008,
+										}},
+									},
+								},
+								"man8": {
+									Header: Header{
+										Path: "share/man/man8",
+										Mode: fs.ModeDir | 0o555,
+									},
+									Entries: map[string]*ListingNode{
+										"arp.8.gz": {Header: Header{
+											Path:          "share/man/man8/arp.8.gz",
+											Mode:          0o444,
+											Size:          2464,
+											ContentOffset: 444928,
+										}},
+										"ifconfig.8.gz": {Header: Header{
+											Path:          "share/man/man8/ifconfig.8.gz",
+											Mode:          0o444,
+											Size:          3382,
+											ContentOffset: 447584,
+										}},
+										"nameif.8.gz": {Header: Header{
+											Path:          "share/man/man8/nameif.8.gz",
+											Mode:          0o444,
+											Size:          523,
+											ContentOffset: 451160,
+										}},
+										"netstat.8.gz": {Header: Header{
+											Path:          "share/man/man8/netstat.8.gz",
+											Mode:          0o444,
+											Size:          4284,
+											ContentOffset: 451880,
+										}},
+										"plipconfig.8.gz": {Header: Header{
+											Path:          "share/man/man8/plipconfig.8.gz",
+											Mode:          0o444,
+											Size:          889,
+											ContentOffset: 456360,
+										}},
+										"rarp.8.gz": {Header: Header{
+											Path:          "share/man/man8/rarp.8.gz",
+											Mode:          0o444,
+											Size:          1198,
+											ContentOffset: 457448,
+										}},
+										"route.8.gz": {Header: Header{
+											Path:          "share/man/man8/route.8.gz",
+											Mode:          0o444,
+											Size:          3525,
+											ContentOffset: 458840,
+										}},
+										"slattach.8.gz": {Header: Header{
+											Path:          "share/man/man8/slattach.8.gz",
+											Mode:          0o444,
+											Size:          1441,
+											ContentOffset: 462560,
+										}},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}},
 	},
 	{
 		name:     "OnlyMagic",
