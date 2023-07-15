@@ -35,38 +35,13 @@ type Header struct {
 	Size int64
 	// LinkTarget is the target of a symlink.
 	LinkTarget string
-}
-
-// Validate does some consistency checking of the header structure, such as
-// checking for valid paths and inconsistent fields, and returns an error if it
-// fails validation.
-func (h *Header) Validate() error {
-	// Path needs to start with a /, and must not contain null bytes
-	// as we might get passed windows paths, ToSlash them first.
-	if err := validatePath(h.Path); err != nil {
-		return err
-	}
-
-	if strings.ContainsAny(h.Path, "\u0000") {
-		return fmt.Errorf("path may not contain null bytes")
-	}
-
-	// Regular files and directories may not have LinkTarget set.
-	if h.Mode.Type() != fs.ModeSymlink && h.LinkTarget != "" {
-		return fmt.Errorf("mode is %v, but Linkname is not empty", h.Mode)
-	}
-
-	// Directories and Symlinks may not have Size and Executable set.
-	if h.Mode.Type() != 0 && h.Size != 0 {
-		return fmt.Errorf("mode is %v, but Size is not 0", h.Mode)
-	}
-
-	// Symlinks need to specify a target.
-	if h.Mode.Type() == fs.ModeSymlink && h.LinkTarget == "" {
-		return fmt.Errorf("type is symlink, but Linkname is empty")
-	}
-
-	return nil
+	// ContentOffset is the position in the NAR file
+	// (in bytes from the beginning of the NAR file)
+	// where a regular file's data begins.
+	// The following Size bytes in the file are the regular file's content.
+	//
+	// This field is ignored by [Writer.WriteHeader].
+	ContentOffset int64
 }
 
 // Modes returned from parsing,
