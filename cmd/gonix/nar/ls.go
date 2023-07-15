@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nix-community/go-nix/nar"
+	"zombiezen.com/go/nix/nar"
 )
 
 type LsCmd struct {

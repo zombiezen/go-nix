@@ -3,7 +3,7 @@ package nix_test
 import (
 	"fmt"
 
-	"github.com/nix-community/go-nix/nix"
+	"zombiezen.com/go/nix"
 )
 
 func ExampleStorePath_Digest() {

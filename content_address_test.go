@@ -3,7 +3,7 @@ package nix
 import (
 	"testing"
 
-	"github.com/nix-community/go-nix/nixbase32"
+	"zombiezen.com/go/nix/nixbase32"
 )
 
 const testSHA256Base32 = "1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s"

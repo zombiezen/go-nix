@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"hash"
 
-	"github.com/nix-community/go-nix/nixbase32"
+	"zombiezen.com/go/nix/nixbase32"
 )
 
 // base64Encoding is the Nix base64 alphabet.

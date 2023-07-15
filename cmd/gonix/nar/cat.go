@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/nix-community/go-nix/nar"
+	"zombiezen.com/go/nix/nar"
 )
 
 type CatCmd struct {

@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"os"
 
-	"github.com/nix-community/go-nix/nar"
+	"zombiezen.com/go/nix/nar"
 )
 
 type DumpPathCmd struct {

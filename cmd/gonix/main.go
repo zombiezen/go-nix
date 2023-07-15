@@ -4,7 +4,7 @@ import (
 	"os"
 
 	"github.com/alecthomas/kong"
-	"github.com/nix-community/go-nix/cmd/gonix/nar"
+	"zombiezen.com/go/nix/cmd/gonix/nar"
 )
 
 //nolint:gochecknoglobals
