@@ -18,6 +18,12 @@ import (
 	"unicode/utf8"
 )
 
+// Extension is the file extension for a file containing a Nix Archive.
+const Extension = ".nar"
+
+// MIMEType is the MIME content type for a Nix Archive file.
+const MIMEType = "application/x-nix-nar"
+
 // A Header represents a single header in a NAR archive.
 // Some fields may not be populated.
 type Header struct {

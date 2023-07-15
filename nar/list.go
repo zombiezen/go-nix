@@ -11,6 +11,12 @@ import (
 	"strings"
 )
 
+// ListingExtension is the file extension for a file containing NAR listing JSON.
+const ListingExtension = ".ls"
+
+// ListingMIMEType is the MIME content type for a .ls file.
+const ListingMIMEType = "application/json"
+
 // Listing is the parsed representation of a ".ls" file,
 // an index of a NAR file.
 type Listing struct {
