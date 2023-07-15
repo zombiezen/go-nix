@@ -1,29 +1,42 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"os"
+	"os/signal"
 
-	"github.com/alecthomas/kong"
-	"zombiezen.com/go/nix/cmd/gonix/nar"
+	"github.com/spf13/cobra"
+	"zombiezen.com/go/bass/sigterm"
 )
 
-//nolint:gochecknoglobals
-var cli struct {
-	Nar nar.Cmd `kong:"cmd,name='nar',help='Create or inspect NAR files'"`
-}
-
 func main() {
-	parser, err := kong.New(&cli)
-	if err != nil {
-		panic(err)
+	rootCommand := &cobra.Command{
+		Use:           "gonix",
+		Short:         "Go Nix test CLI",
+		SilenceErrors: true,
+		SilenceUsage:  true,
 	}
 
-	ctx, err := parser.Parse(os.Args[1:])
-	if err != nil {
-		panic(err)
+	narGroup := &cobra.Command{
+		Use:   "nar",
+		Short: "Create or inspect NAR files",
 	}
-	// Call the Run() method of the selected parsed command.
-	err = ctx.Run()
+	narGroup.AddCommand(
+		newNARCatCommand(),
+		newNARDumpCommand(),
+		newNARListCommand(),
+	)
 
-	ctx.FatalIfErrorf(err)
+	rootCommand.AddCommand(
+		narGroup,
+	)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), sigterm.Signals()...)
+	err := rootCommand.ExecuteContext(ctx)
+	cancel()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "gonix:", err)
+		os.Exit(1)
+	}
 }

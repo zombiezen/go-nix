@@ -1,18 +1,34 @@
-package nar
+package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"zombiezen.com/go/nix/nar"
 )
 
-type LsCmd struct {
-	Nar       string `kong:"arg,type:'existingfile',help='Path to the NAR'"`
-	Path      string `kong:"arg,optional,type='string',default='/',help='Path inside the NAR. Defaults to \"/\".'"`
-	Recursive bool   `kong:"short='R',help='Whether to list recursively, or only the current level.'"`
+func newNARListCommand() *cobra.Command {
+	c := &cobra.Command{
+		Use:                   "ls [-R] ARCHIVE [PATH]",
+		DisableFlagsInUseLine: false,
+		Short:                 "Show information about a path inside a NAR file",
+		Args:                  cobra.RangeArgs(1, 2),
+		SilenceErrors:         true,
+		SilenceUsage:          true,
+	}
+	recursive := c.Flags().BoolP("recursive", "R", false, "Whether to list recursively, or only the current level.")
+	c.RunE = func(cmd *cobra.Command, args []string) error {
+		fileArg := "/"
+		if len(args) > 1 {
+			fileArg = args[1]
+		}
+		return runNARList(cmd.Context(), args[0], fileArg, *recursive)
+	}
+	return c
 }
 
 // headerLineString returns a one-line string describing a header.
@@ -41,8 +57,8 @@ func headerLineString(hdr *nar.Header) string {
 	return sb.String()
 }
 
-func (cmd *LsCmd) Run() error {
-	f, err := os.Open(cmd.Nar)
+func runNARList(ctx context.Context, archivePath string, file string, recursive bool) error {
+	f, err := os.Open(archivePath)
 	if err != nil {
 		return err
 	}
@@ -60,18 +76,18 @@ func (cmd *LsCmd) Run() error {
 		}
 
 		// if the yielded path starts with the path specified
-		if strings.HasPrefix("/"+hdr.Path, cmd.Path) {
-			remainder := hdr.Path[len(cmd.Path)-1:]
+		if strings.HasPrefix("/"+hdr.Path, file) {
+			remainder := hdr.Path[len(file)-1:]
 			// If recursive was requested, return all these elements.
 			// Else, look at the remainder - There may be no other slashes.
-			if cmd.Recursive || !strings.Contains(remainder, "/") {
+			if recursive || !strings.Contains(remainder, "/") {
 				// fmt.Printf("%v type %v\n", hdr.Type, hdr.Path)
 				print(headerLineString(hdr))
 			}
 		} else {
 			// We can exit early as soon as we receive a header whose path doesn't have the prefix we're searching for,
 			// and the path is lexicographically bigger than our search prefix
-			if "/"+hdr.Path > cmd.Path {
+			if "/"+hdr.Path > file {
 				return nil
 			}
 		}
