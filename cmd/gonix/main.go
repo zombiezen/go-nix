@@ -30,6 +30,7 @@ func main() {
 
 	rootCommand.AddCommand(
 		narGroup,
+		newHashCommand(),
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), sigterm.Signals()...)
