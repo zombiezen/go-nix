@@ -42,6 +42,8 @@ type Reader struct {
 	remaining int64
 	// prefix is the current directory's path including a trailing slash.
 	prefix string
+	// nameStack contains the last encountered name for each open directory.
+	nameStack []string
 	// err is the error to return for future calls to Next or Read.
 	err error
 }
@@ -131,6 +133,9 @@ func (nr *Reader) Next() (_ *Header, err error) {
 				if err := nr.expect(")"); err != nil {
 					return nil, fmt.Errorf("nar: %w", err)
 				}
+
+				nr.nameStack[len(nr.nameStack)-1] = "" // clear for GC
+				nr.nameStack = nr.nameStack[:len(nr.nameStack)-1]
 				prevSlash := strings.LastIndexByte(nr.prefix[:len(nr.prefix)-len("/")], '/')
 				if prevSlash < 0 {
 					nr.prefix = ""
@@ -157,6 +162,10 @@ func (nr *Reader) Next() (_ *Header, err error) {
 		if err := validateFilename(name); err != nil {
 			return nil, fmt.Errorf("nar: directory: entry name: %v", err)
 		}
+		if last := nr.nameStack[len(nr.nameStack)-1]; last >= name {
+			return nil, fmt.Errorf("nar: directory: entry name %q >= %q", last, name)
+		}
+		nr.nameStack[len(nr.nameStack)-1] = name
 		if err := nr.expect(nodeToken); err != nil {
 			return nil, fmt.Errorf("nar: directory: %w", err)
 		}
@@ -258,6 +267,7 @@ func (nr *Reader) node(hdr *Header) error {
 		}
 		hdr.Mode = modeDirectory
 		nr.state = readerStateDirectoryStart
+		nr.nameStack = append(nr.nameStack, "")
 	case typeSymlink:
 		if err := nr.expect(targetToken); err != nil {
 			return fmt.Errorf("symlink: %w", err)
