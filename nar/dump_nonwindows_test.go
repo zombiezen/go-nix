@@ -1,16 +1,14 @@
 //go:build !windows
 // +build !windows
 
-package nar_test
+package nar
 
 import (
 	"bytes"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
-
-	"github.com/nix-community/go-nix/pkg/nar"
-	"github.com/stretchr/testify/assert"
 )
 
 // TestDumpPathUnknown makes sure calling DumpPath on a path with a fifo
@@ -21,12 +19,17 @@ func TestDumpPathUnknown(t *testing.T) {
 
 	err := syscall.Mkfifo(p, 0o644)
 	if err != nil {
-		panic(err)
+		t.Fatal(err)
 	}
 
 	var buf bytes.Buffer
 
-	err = nar.DumpPath(&buf, p)
-	assert.Error(t, err)
-	assert.Containsf(t, err.Error(), "unknown type", "error should complain about unknown type")
+	err = DumpPath(&buf, p)
+	if err == nil {
+		t.Fatal("DumpPath did not return an error")
+	}
+	const want = "unknown type"
+	if got := err.Error(); !strings.Contains(got, want) {
+		t.Errorf("DumpPath(...) = %s; did not contain %q", got, want)
+	}
 }

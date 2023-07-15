@@ -1,15 +1,20 @@
-// Package nar provides types for reading and writing Nix Archive (NAR) files.
-//
-// The NAR format is described in Figure 5.2 on page 93 of
-// [The purely functional software deployment model] by Eelco Dolstra.
-//
-// [The purely functional software deployment model]: https://edolstra.github.io/pubs/phd-thesis.pdf
+/*
+Package nar implements access to Nix Archive (NAR) files.
+
+Nix Archive is a file format for storing a directory or a single file
+in a binary reproducible format. This is the format that is being used to
+pack and distribute Nix build results. It doesn't store any timestamps or
+similar fields available in conventional filesystems. .nar files can be read
+and written in a streaming manner.
+*/
 package nar
 
 import (
 	"fmt"
 	"io/fs"
+	slashpath "path"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -28,8 +33,71 @@ type Header struct {
 	Mode fs.FileMode
 	// Size is the size of a regular file in bytes.
 	Size int64
-	// Linkname is the target of a symlink.
-	Linkname string
+	// LinkTarget is the target of a symlink.
+	LinkTarget string
+}
+
+// Validate does some consistency checking of the header structure, such as
+// checking for valid paths and inconsistent fields, and returns an error if it
+// fails validation.
+func (h *Header) Validate() error {
+	// Path needs to start with a /, and must not contain null bytes
+	// as we might get passed windows paths, ToSlash them first.
+	if err := validatePath(h.Path); err != nil {
+		return err
+	}
+
+	if strings.ContainsAny(h.Path, "\u0000") {
+		return fmt.Errorf("path may not contain null bytes")
+	}
+
+	// Regular files and directories may not have LinkTarget set.
+	if h.Mode.Type() != fs.ModeSymlink && h.LinkTarget != "" {
+		return fmt.Errorf("mode is %v, but Linkname is not empty", h.Mode)
+	}
+
+	// Directories and Symlinks may not have Size and Executable set.
+	if h.Mode.Type() != 0 && h.Size != 0 {
+		return fmt.Errorf("mode is %v, but Size is not 0", h.Mode)
+	}
+
+	// Symlinks need to specify a target.
+	if h.Mode.Type() == fs.ModeSymlink && h.LinkTarget == "" {
+		return fmt.Errorf("type is symlink, but Linkname is empty")
+	}
+
+	return nil
+}
+
+// Modes returned from parsing,
+// set with representative permission bits.
+const (
+	modeRegular    fs.FileMode = 0o444
+	modeExecutable fs.FileMode = 0o555
+	modeDirectory  fs.FileMode = fs.ModeDir | 0o555
+	modeSymlink    fs.FileMode = fs.ModeSymlink | 0o777
+)
+
+// FileInfo returns an fs.FileInfo for the Header.
+func (h *Header) FileInfo() fs.FileInfo {
+	return headerFileInfo{h}
+}
+
+type headerFileInfo struct {
+	h *Header
+}
+
+func (fi headerFileInfo) Mode() fs.FileMode  { return fi.h.Mode }
+func (fi headerFileInfo) Size() int64        { return fi.h.Size }
+func (fi headerFileInfo) IsDir() bool        { return fi.h.Mode.IsDir() }
+func (fi headerFileInfo) ModTime() time.Time { return time.Unix(0, 0) }
+func (fi headerFileInfo) Sys() any           { return fi.h }
+
+func (fi headerFileInfo) Name() string {
+	if fi.h.Path == "" {
+		return ""
+	}
+	return slashpath.Base(fi.h.Path)
 }
 
 // Tokens
@@ -88,4 +156,44 @@ func validateFilename(name string) error {
 		return fmt.Errorf("%q not allowed in filename", name[i])
 	}
 	return nil
+}
+
+// treeDelta computes the directory ends (pops) and/or new directories to be created
+// in order to advance from one path to another.
+func treeDelta(oldPath string, oldIsDir bool, newPath string) (pop int, newDirs string, err error) {
+	newParent, _ := slashpath.Split(newPath)
+	if shared := oldPath + "/"; strings.HasPrefix(newPath, shared) {
+		if !oldIsDir {
+			return 0, "", fmt.Errorf("%s is not a directory", formatLastPath(oldPath))
+		}
+		newDirs = strings.TrimSuffix(newParent[len(shared):], "/")
+		return pop, strings.TrimSuffix(newDirs, "/"), nil
+	}
+
+	oldParent, _ := slashpath.Split(oldPath)
+	shared := oldParent
+	for ; !strings.HasPrefix(newParent, shared); pop++ {
+		shared, _ = slashpath.Split(strings.TrimSuffix(shared, "/"))
+	}
+
+	if oldPath != "" && newPath != "" {
+		newName := firstPathComponent(newPath[len(shared):])
+		oldName := firstPathComponent(oldPath[len(shared):])
+		if newName <= oldName {
+			return 0, "", fmt.Errorf("%s is not ordered after %s",
+				formatLastPath(newPath[:len(shared)+len(newName)]),
+				formatLastPath(oldPath[:len(shared)+len(oldName)]))
+		}
+	}
+
+	newDirs = strings.TrimSuffix(newParent[len(shared):], "/")
+	return pop, newDirs, nil
+}
+
+func firstPathComponent(path string) string {
+	i := strings.IndexByte(path, '/')
+	if i == -1 {
+		return path
+	}
+	return path[:i]
 }

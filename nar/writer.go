@@ -25,9 +25,6 @@ const (
 // Writer provides sequential writing of a NAR archive.
 // [Writer.WriteHeader] begins a new file with the provided [Header],
 // and then Writer can be treated as an [io.Writer] to supply that file's data.
-//
-// The caller is responsible for writing files in lexicographical order
-// and calling Close at the end to finish the stream.
 type Writer struct {
 	w   io.Writer
 	err error
@@ -176,7 +173,7 @@ func (nw *Writer) node(hdr *Header) error {
 		nw.write(typeToken)
 		nw.write(typeSymlink)
 		nw.write(targetToken)
-		nw.write(hdr.Linkname)
+		nw.write(hdr.LinkTarget)
 		nw.write(")")
 		if hdr.Path != "" {
 			nw.write(")")
@@ -218,6 +215,7 @@ func (nw *Writer) Write(p []byte) (n int, err error) {
 }
 
 // Close writes the footer of the NAR archive.
+// It does not close the underlying writer.
 // If the current file (from a prior call to [Writer.WriteHeader])
 // is not fully written, then Close returns an error.
 func (nw *Writer) Close() error {
@@ -334,46 +332,6 @@ func (nw *Writer) finishFile() error {
 	return nw.err
 }
 
-// treeDelta computes the directory ends (pops) and/or new directories to be created
-// in order to advance from one path to another.
-func treeDelta(oldPath string, oldIsDir bool, newPath string) (pop int, newDirs string, err error) {
-	newParent, _ := slashpath.Split(newPath)
-	if shared := oldPath + "/"; strings.HasPrefix(newPath, shared) {
-		if !oldIsDir {
-			return 0, "", fmt.Errorf("%s is not a directory", formatLastPath(oldPath))
-		}
-		newDirs = strings.TrimSuffix(newParent[len(shared):], "/")
-		return pop, strings.TrimSuffix(newDirs, "/"), nil
-	}
-
-	oldParent, _ := slashpath.Split(oldPath)
-	shared := oldParent
-	for ; !strings.HasPrefix(newParent, shared); pop++ {
-		shared, _ = slashpath.Split(strings.TrimSuffix(shared, "/"))
-	}
-
-	if oldPath != "" && newPath != "" {
-		newName := firstPathComponent(newPath[len(shared):])
-		oldName := firstPathComponent(oldPath[len(shared):])
-		if newName <= oldName {
-			return 0, "", fmt.Errorf("%s is not ordered after %s",
-				formatLastPath(newPath[:len(shared)+len(newName)]),
-				formatLastPath(oldPath[:len(shared)+len(oldName)]))
-		}
-	}
-
-	newDirs = strings.TrimSuffix(newParent[len(shared):], "/")
-	return pop, newDirs, nil
-}
-
-func firstPathComponent(path string) string {
-	i := strings.IndexByte(path, '/')
-	if i == -1 {
-		return path
-	}
-	return path[:i]
-}
-
 func formatLastPath(s string) string {
 	if s == "" {
 		return "<root filesystem object>"
@@ -381,14 +339,18 @@ func formatLastPath(s string) string {
 	return s
 }
 
-func validatePath(path string) error {
-	if path == "" {
+func validatePath(origPath string) error {
+	if origPath == "" {
 		return nil
 	}
+	path := origPath
 	for {
 		elemEnd := strings.IndexByte(path, '/')
 		if elemEnd == -1 {
 			elemEnd = len(path)
+		}
+		if path[:elemEnd] == "" {
+			return fmt.Errorf("%q has empty elements", origPath)
 		}
 		if err := validateFilename(path[:elemEnd]); err != nil {
 			return err
