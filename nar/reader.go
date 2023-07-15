@@ -24,7 +24,8 @@ const (
 // [Reader.Next] advances to the next file in the archive (including the first),
 // and then Reader can be treated as an [io.Reader] to access the file's data.
 type Reader struct {
-	r io.Reader
+	r   io.Reader
+	off int64
 	// buf is a temporary buffer used for reading.
 	// Its length is a multiple of stringAlign
 	// that is sufficient to hold any of the known tokens in the NAR format.
@@ -84,7 +85,8 @@ func (nr *Reader) Next() (_ *Header, err error) {
 		return hdr, nil
 	case readerStateFile:
 		// Advance to end of file.
-		_, err := io.CopyN(io.Discard, nr.r, nr.remaining+int64(nr.padding))
+		n, err := io.CopyN(io.Discard, nr.r, nr.remaining+int64(nr.padding))
+		nr.off += n
 		if err == io.EOF {
 			err = io.ErrUnexpectedEOF
 		}
@@ -187,6 +189,7 @@ func (nr *Reader) Read(p []byte) (n int, err error) {
 		p = p[:nr.remaining]
 	}
 	n, err = nr.r.Read(p)
+	nr.off += int64(n)
 	nr.remaining -= int64(n)
 	if err == io.EOF {
 		// Files have a closing parenthesis token,
@@ -245,6 +248,7 @@ func (nr *Reader) node(hdr *Header) error {
 			return fmt.Errorf("file too large (%d bytes)", unsignedSize)
 		}
 		hdr.Size = int64(unsignedSize)
+		hdr.ContentOffset = nr.off
 		nr.state = readerStateFile
 		nr.remaining = int64(unsignedSize)
 		nr.padding = int8(stringPaddingLength(int(unsignedSize % stringAlign)))
@@ -281,6 +285,7 @@ func (nr *Reader) node(hdr *Header) error {
 func (nr *Reader) verifyEOF() {
 	switch _, err := io.ReadFull(nr.r, nr.buf[:1]); err {
 	case nil:
+		nr.off++
 		nr.err = errTrailingData
 	case io.EOF:
 		nr.err = io.EOF
@@ -290,7 +295,8 @@ func (nr *Reader) verifyEOF() {
 }
 
 func (nr *Reader) read(p []byte) error {
-	_, err := io.ReadFull(nr.r, p)
+	n, err := io.ReadFull(nr.r, p)
+	nr.off += int64(n)
 	if err == io.EOF {
 		err = io.ErrUnexpectedEOF
 	}
