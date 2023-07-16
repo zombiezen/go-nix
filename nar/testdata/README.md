@@ -14,6 +14,9 @@ This is a collection of .nar files used for tests.
 - `nested-dir-and-common-prefix.nar` contains two symlinks (and their parent directories):
   `foo/b` and `foo-a`.
 - `symlink.nar` contains a symlink at the root with the target `/nix/store/somewhereelse`.
+- `empty-directory-siblings.nar` stores the equivalent of running
+  `mkdir -p share/locale/be/LC_MESSAGES share/locale/bg`.
+  It is a regression test for a bug discovered while archiving glibc.
 - `nar_1094wph9z4nwlgvsd53abfz8i117ykiv5dwnq9nnhz846s7xqd7d.nar` is a copy of the
   `/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60_p20170221182432` derivation.
 

@@ -239,14 +239,15 @@ func (nw *Writer) Close() error {
 	}
 
 	pop := strings.Count(nw.lastPath, "/")
-	if nw.lastPath != "" {
-		pop++
-	}
-	if nw.lastPathDir {
+	if nw.lastPath != "" && nw.lastPathDir {
 		pop++
 	}
 	for i := 0; i < pop; i++ {
-		nw.write(")")
+		nw.write(")") // directory
+		nw.write(")") // parent's entry
+	}
+	if nw.lastPath != "" || nw.lastPathDir {
+		nw.write(")") // root directory
 	}
 
 	prevErr := nw.err
@@ -330,6 +331,53 @@ func (nw *Writer) finishFile() error {
 	}
 	nw.write(")")
 	return nw.err
+}
+
+// treeDelta computes the directory ends (pops) and/or new directories to be created
+// in order to advance from one path to another.
+func treeDelta(oldPath string, oldIsDir bool, newPath string) (pop int, newDirs string, err error) {
+	newParent, _ := slashpath.Split(newPath)
+	if shared := oldPath + "/"; strings.HasPrefix(newPath, shared) {
+		if !oldIsDir {
+			return 0, "", fmt.Errorf("%s is not a directory", formatLastPath(oldPath))
+		}
+		newDirs = strings.TrimSuffix(newParent[len(shared):], "/")
+		return pop, strings.TrimSuffix(newDirs, "/"), nil
+	}
+
+	var shared string
+	switch {
+	case oldIsDir && oldPath == "":
+		shared = oldPath
+	case oldIsDir && oldPath != "":
+		shared = oldPath + "/"
+	default:
+		shared, _ = slashpath.Split(oldPath)
+	}
+	for ; !strings.HasPrefix(newParent, shared); pop++ {
+		shared, _ = slashpath.Split(strings.TrimSuffix(shared, "/"))
+	}
+
+	if oldPath != "" && newPath != "" {
+		newName := firstPathComponent(newPath[len(shared):])
+		oldName := firstPathComponent(oldPath[len(shared):])
+		if newName <= oldName {
+			return 0, "", fmt.Errorf("%s is not ordered after %s",
+				formatLastPath(newPath[:len(shared)+len(newName)]),
+				formatLastPath(oldPath[:len(shared)+len(oldName)]))
+		}
+	}
+
+	newDirs = strings.TrimSuffix(newParent[len(shared):], "/")
+	return pop, newDirs, nil
+}
+
+func firstPathComponent(path string) string {
+	i := strings.IndexByte(path, '/')
+	if i == -1 {
+		return path
+	}
+	return path[:i]
 }
 
 func formatLastPath(s string) string {

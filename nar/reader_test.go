@@ -229,6 +229,80 @@ var narTests = []struct {
 		}},
 	},
 	{
+		name:     "EmptyDirectoryTree",
+		dataFile: "empty-directory-siblings.nar",
+		want: []testEntry{
+			{header: &Header{
+				Mode: fs.ModeDir | 0o555,
+			}},
+			{header: &Header{
+				Path: "share",
+				Mode: fs.ModeDir | 0o555,
+			}},
+			{header: &Header{
+				Path: "share/locale",
+				Mode: fs.ModeDir | 0o555,
+			}},
+			{header: &Header{
+				Path: "share/locale/be",
+				Mode: fs.ModeDir | 0o555,
+			}},
+			{header: &Header{
+				Path: "share/locale/be/LC_MESSAGES",
+				Mode: fs.ModeDir | 0o555,
+			}},
+			{header: &Header{
+				Path: "share/locale/bg",
+				Mode: fs.ModeDir | 0o555,
+			}},
+		},
+		wantList: Listing{
+			Root: ListingNode{
+				Header: Header{
+					Mode: fs.ModeDir | 0o555,
+				},
+				Entries: map[string]*ListingNode{
+					"share": {
+						Header: Header{
+							Path: "share",
+							Mode: fs.ModeDir | 0o555,
+						},
+						Entries: map[string]*ListingNode{
+							"locale": {
+								Header: Header{
+									Path: "share/locale",
+									Mode: fs.ModeDir | 0o555,
+								},
+								Entries: map[string]*ListingNode{
+									"be": {
+										Header: Header{
+											Path: "share/locale/be",
+											Mode: fs.ModeDir | 0o555,
+										},
+										Entries: map[string]*ListingNode{
+											"LC_MESSAGES": {
+												Header: Header{
+													Path: "share/locale/be/LC_MESSAGES",
+													Mode: fs.ModeDir | 0o555,
+												},
+											},
+										},
+									},
+									"bg": {
+										Header: Header{
+											Path: "share/locale/bg",
+											Mode: fs.ModeDir | 0o555,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	},
+	{
 		name:     "NestedDirAndCommonPrefix",
 		dataFile: "nested-dir-and-common-prefix.nar",
 		want: []testEntry{
