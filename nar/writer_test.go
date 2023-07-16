@@ -24,6 +24,11 @@ func TestWriter(t *testing.T) {
 				if err := nw.WriteHeader(ent.header); err != nil {
 					t.Errorf("WriteHeader#%d(%+v): %v", i+1, ent.header, err)
 				}
+				if ent.header.Mode.IsRegular() {
+					if got := nw.Offset(); got != ent.header.ContentOffset {
+						t.Errorf("Offset() = %d; want %d", got, ent.header.ContentOffset)
+					}
+				}
 				if ent.data != "" {
 					if _, err := io.WriteString(nw, ent.data); err != nil {
 						t.Errorf("io.WriteString#%d(w, %q): %v", i+1, ent.data, err)

@@ -27,6 +27,7 @@ const (
 // and then Writer can be treated as an [io.Writer] to supply that file's data.
 type Writer struct {
 	w   io.Writer
+	off int64
 	err error
 	// buf is a temporary buffer used for writing.
 	// Its length is a multiple of stringAlign
@@ -206,12 +207,21 @@ func (nw *Writer) Write(p []byte) (n int, err error) {
 	}
 	if len(p) > 0 {
 		n, err = nw.w.Write(p)
+		nw.off += int64(n)
 		if err == nil && tooLong {
 			err = ErrWriteTooLong
 		}
 	}
 	nw.remaining -= int64(n)
 	return n, err
+}
+
+// Offset returns how many bytes have been written to the underlying writer.
+// This can be used to determine the "narOffset" of a regular file's contents
+// if called immediately after the [Writer.WriteHeader] call
+// and before the first call to [Writer.Write].
+func (nw *Writer) Offset() int64 {
+	return nw.off
 }
 
 // Close writes the footer of the NAR archive.
@@ -262,7 +272,8 @@ func (nw *Writer) writeInt(x uint64) {
 		return
 	}
 	binary.LittleEndian.PutUint64(nw.buf[:8], x)
-	_, err := nw.w.Write(nw.buf[:8])
+	n, err := nw.w.Write(nw.buf[:8])
+	nw.off += int64(n)
 	if err != nil {
 		nw.err = fmt.Errorf("nar: %w", err)
 	}
@@ -279,14 +290,18 @@ func (nw *Writer) write(s string) {
 		// Try to use WriteString if possible, otherwise multiple Writes.
 
 		if sw, ok := nw.w.(io.StringWriter); ok {
-			if _, err := sw.WriteString(s); err != nil {
+			n, err := sw.WriteString(s)
+			nw.off += int64(n)
+			if err != nil {
 				nw.err = fmt.Errorf("nar: %w", err)
 				return
 			}
 		} else {
 			for i := 0; i < len(s); {
 				n := copy(nw.buf[:], s[i:])
-				if _, err := nw.w.Write(nw.buf[:n]); err != nil {
+				nn, err := nw.w.Write(nw.buf[:n])
+				nw.off += int64(nn)
+				if err != nil {
 					nw.err = fmt.Errorf("nar: %w", err)
 					return
 				}
@@ -298,7 +313,9 @@ func (nw *Writer) write(s string) {
 			for i := 0; i < padding; i++ {
 				nw.buf[i] = 0
 			}
-			if _, err := nw.w.Write(nw.buf[:padding]); err != nil {
+			n, err := nw.w.Write(nw.buf[:padding])
+			nw.off += int64(n)
+			if err != nil {
 				nw.err = fmt.Errorf("nar: %w", err)
 			}
 		}
@@ -312,7 +329,9 @@ func (nw *Writer) write(s string) {
 	for i := len(s); i < n; i++ {
 		nw.buf[i] = 0
 	}
-	if _, err := nw.w.Write(nw.buf[:n]); err != nil {
+	nn, err := nw.w.Write(nw.buf[:n])
+	nw.off += int64(nn)
+	if err != nil {
 		nw.err = fmt.Errorf("nar: %w", err)
 	}
 }
@@ -325,7 +344,9 @@ func (nw *Writer) finishFile() error {
 		for i := int8(0); i < nw.padding; i++ {
 			nw.buf[i] = 0
 		}
-		if _, err := nw.w.Write(nw.buf[:nw.padding]); err != nil {
+		n, err := nw.w.Write(nw.buf[:nw.padding])
+		nw.off += int64(n)
+		if err != nil {
 			nw.err = fmt.Errorf("nar: %w", err)
 		}
 	}
