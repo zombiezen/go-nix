@@ -89,8 +89,7 @@ const (
 )
 
 // ParseStorePath parses an absolute slash-separated path as a [store path]
-// (i.e. an immediate child of a Nix store directory)
-// and returns the directory and store object name.
+// (i.e. an immediate child of a Nix store directory).
 //
 // [store path]: https://nixos.org/manual/nix/stable/glossary.html#gloss-store-path
 func ParseStorePath(path string) (StorePath, error) {
