@@ -2,10 +2,12 @@ package nar
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -288,6 +290,81 @@ func BenchmarkWriter(b *testing.B) {
 			b.ResetTimer()
 		}
 	}
+}
+
+func TestBufWriterString(t *testing.T) {
+	const overflowSize = len(bufWriter{}.buf) + 1
+
+	t.Run("LongString", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		bw := &bufWriter{w: buf}
+		s := strings.Repeat("x", overflowSize)
+		bw.string(s)
+		bw.flush()
+
+		want := make([]byte, 8+overflowSize+(stringAlign-1))
+		binary.LittleEndian.PutUint64(want, uint64(overflowSize))
+		copy(want[8:], s)
+		if diff := cmp.Diff(want, buf.Bytes()); diff != "" {
+			t.Errorf("-want +got:\n%s", diff)
+		}
+	})
+
+	t.Run("LongStringWithoutWriteString", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		bw := &bufWriter{w: onlyWriter{buf}}
+		s := strings.Repeat("x", overflowSize)
+		bw.string(s)
+		bw.flush()
+
+		want := make([]byte, 8+overflowSize+(stringAlign-1))
+		binary.LittleEndian.PutUint64(want, uint64(overflowSize))
+		copy(want[8:], s)
+		if diff := cmp.Diff(want, buf.Bytes()); diff != "" {
+			t.Errorf("-want +got:\n%s", diff)
+		}
+	})
+}
+
+func TestBufWriterUint64(t *testing.T) {
+	buf := new(bytes.Buffer)
+	bw := &bufWriter{
+		w:      buf,
+		bufLen: int16(len(bufWriter{}.buf)) - 1,
+	}
+	bw.uint64(42)
+	bw.flush()
+
+	want := bytes.Repeat([]byte{0}, len(bufWriter{}.buf))
+	want = binary.LittleEndian.AppendUint64(want, 42)
+	if diff := cmp.Diff(want, buf.Bytes()); diff != "" {
+		t.Errorf("-want +got:\n%s", diff)
+	}
+}
+
+func TestBufWriterPad(t *testing.T) {
+	buf := new(bytes.Buffer)
+	const initialOffset = 2
+	bw := &bufWriter{
+		w:      buf,
+		off:    initialOffset,
+		bufLen: int16(len(bufWriter{}.buf)) - 1,
+	}
+	bw.pad()
+	bw.flush()
+
+	want := bytes.Repeat([]byte{0}, len(bufWriter{}.buf)+stringAlign-initialOffset)
+	if diff := cmp.Diff(want, buf.Bytes()); diff != "" {
+		t.Errorf("-want +got:\n%s", diff)
+	}
+}
+
+type onlyWriter struct {
+	w io.Writer
+}
+
+func (w onlyWriter) Write(p []byte) (int, error) {
+	return w.w.Write(p)
 }
 
 func TestTreeDelta(t *testing.T) {

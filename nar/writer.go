@@ -31,8 +31,6 @@ type Writer struct {
 	state int8
 	// lastPathDir is true if the path named by lastPath is a directory.
 	lastPathDir bool
-	// padding is the number of padding bytes left at the end of a regular file.
-	padding int8
 	// remaining is the number of bytes left in a regular file.
 	remaining int64
 	// lastPath is the path of the last file system object written to the archive.
@@ -160,7 +158,6 @@ func (nw *Writer) node(hdr *Header) error {
 		nw.bw.uint64(uint64(hdr.Size))
 		nw.state = writerStateFile
 		nw.remaining = hdr.Size
-		nw.padding = int8(stringPaddingLength(int(hdr.Size % stringAlign)))
 	case fs.ModeDir:
 		nw.bw.string("(")
 		nw.bw.string(typeToken)
@@ -204,8 +201,7 @@ func (nw *Writer) Write(p []byte) (n int, err error) {
 		p = p[:nw.remaining]
 	}
 	if len(p) > 0 {
-		n, err = nw.bw.w.Write(p)
-		nw.bw.off += int64(n)
+		n, err = nw.bw.Write(p)
 		if err == nil && tooLong {
 			err = ErrWriteTooLong
 		}
@@ -267,11 +263,12 @@ func (nw *Writer) Close() error {
 }
 
 func (nw *Writer) finishFile() error {
-	nw.bw.pad(int(nw.padding))
+	nw.bw.pad()
 	nw.bw.string(")")
 	return nw.bw.err
 }
 
+// bufWriter implements buffered NAR string writing.
 type bufWriter struct {
 	w io.Writer
 	// off is the number of bytes written to w.
@@ -313,6 +310,7 @@ func (bw *bufWriter) uint64(x uint64) {
 	if bw.err != nil {
 		return
 	}
+	bw.pad()
 	if int(bw.bufLen)+8 > len(bw.buf) {
 		bw.flush()
 		if bw.err != nil {
@@ -350,7 +348,7 @@ func (bw *bufWriter) string(s string) {
 	// String fits in buffer.
 	nn := copy(bw.buf[bw.bufLen:], s)
 	bw.bufLen += int16(nn)
-	bw.pad(n - len(s))
+	bw.pad()
 }
 
 func (bw *bufWriter) longString(s string) {
@@ -371,26 +369,28 @@ func (bw *bufWriter) longString(s string) {
 		}
 	} else {
 		for i := 0; i < len(s); {
-			if int(bw.bufLen) < len(bw.buf) {
+			if int(bw.bufLen) >= len(bw.buf) {
 				bw.flush()
 				if bw.err != nil {
 					return
 				}
 			}
 			n := copy(bw.buf[bw.bufLen:], s[i:])
+			bw.bufLen += int16(n)
 			i += n
 		}
 	}
 
-	bw.pad(stringPaddingLength(len(s)))
+	bw.pad()
 }
 
-// pad writes n zero bytes.
-func (bw *bufWriter) pad(n int) {
+// pad writes zero bytes until bw.off+bw.bufLen is evenly divisible by stringAlign.
+func (bw *bufWriter) pad() {
 	if bw.err != nil {
 		return
 	}
-	for int(bw.bufLen)+n > len(bw.buf) {
+	n := stringPaddingLength(int(bw.off%stringAlign) + int(bw.bufLen))
+	if int(bw.bufLen)+n > len(bw.buf) {
 		n -= len(bw.buf) - int(bw.bufLen)
 		for ; int(bw.bufLen) < len(bw.buf); bw.bufLen++ {
 			bw.buf[bw.bufLen] = 0
