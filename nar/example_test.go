@@ -1,6 +1,7 @@
 package nar_test
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -21,7 +22,8 @@ func ExampleReader() {
 	defer narFile.Close()
 
 	// List the NAR file's contents.
-	narReader := nar.NewReader(narFile)
+	// To reduce I/O overhead, we wrap the OS file with a buffered reader.
+	narReader := nar.NewReader(bufio.NewReader(narFile))
 	for {
 		hdr, err := narReader.Next()
 		if err == io.EOF {

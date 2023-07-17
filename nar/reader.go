@@ -23,6 +23,9 @@ const (
 // Reader provides sequential access to the contents of a NAR archive.
 // [Reader.Next] advances to the next file in the archive (including the first),
 // and then Reader can be treated as an [io.Reader] to access the file's data.
+//
+// Readers do not read ahead and thus perform many small (8-byte) reads.
+// Pass a [bufio.Reader] into [NewReader] if this is a concern for your application.
 type Reader struct {
 	r   io.Reader
 	off int64
