@@ -26,25 +26,22 @@ const (
 // [Writer.WriteHeader] begins a new file with the provided [Header],
 // and then Writer can be treated as an [io.Writer] to supply that file's data.
 type Writer struct {
-	w   io.Writer
-	off int64
-	err error
-	// buf is a temporary buffer used for writing.
-	// Its length is a multiple of stringAlign
-	// that is sufficient to hold any of the known tokens in the NAR format.
-	// It is larger than Reader's buffer because we use it to write names.
-	buf [64]byte
+	bw bufWriter
 
-	state       int8
+	state int8
+	// lastPathDir is true if the path named by lastPath is a directory.
 	lastPathDir bool
-	padding     int8
-	remaining   int64
-	lastPath    string
+	// padding is the number of padding bytes left at the end of a regular file.
+	padding int8
+	// remaining is the number of bytes left in a regular file.
+	remaining int64
+	// lastPath is the path of the last file system object written to the archive.
+	lastPath string
 }
 
 // NewWriter returns a new [Writer] writing to w.
 func NewWriter(w io.Writer) *Writer {
-	return &Writer{w: w}
+	return &Writer{bw: bufWriter{w: w}}
 }
 
 // WriteHeader writes hdr and prepares to accept the file's contents.
@@ -57,8 +54,8 @@ func NewWriter(w io.Writer) *Writer {
 // equal to or ordered lexicographically before the paths of previous calls to WriteHeader,
 // then WriteHeader will return an error.
 func (nw *Writer) WriteHeader(hdr *Header) (err error) {
-	if nw.err != nil {
-		return nw.err
+	if nw.bw.err != nil {
+		return nw.bw.err
 	}
 	if err := validatePath(hdr.Path); err != nil {
 		return fmt.Errorf("nar: %w", err)
@@ -66,14 +63,14 @@ func (nw *Writer) WriteHeader(hdr *Header) (err error) {
 
 	switch nw.state {
 	case writerStateInit:
-		nw.write(magic)
+		nw.bw.string(magic)
 		nw.state = writerStateRoot
 		fallthrough
 	case writerStateRoot:
 		if hdr.Path != "" {
-			nw.write("(")
-			nw.write(typeToken)
-			nw.write(typeDirectory)
+			nw.bw.string("(")
+			nw.bw.string(typeToken)
+			nw.bw.string(typeDirectory)
 			nw.lastPath = ""
 			nw.lastPathDir = true
 		}
@@ -95,7 +92,7 @@ func (nw *Writer) WriteHeader(hdr *Header) (err error) {
 		if err := nw.finishFile(); err != nil {
 			return err
 		}
-		nw.write(")") // finish directory entry
+		nw.bw.string(")") // finish directory entry
 
 		if err := nw.node(hdr); err != nil {
 			return err
@@ -122,19 +119,19 @@ func (nw *Writer) node(hdr *Header) error {
 		return err
 	}
 	for i := 0; i < pop; i++ {
-		nw.write(")") // directory
-		nw.write(")") // parent's entry
+		nw.bw.string(")") // directory
+		nw.bw.string(")") // parent's entry
 	}
 	for newDirs != "" {
 		name := firstPathComponent(newDirs)
-		nw.write(entryToken)
-		nw.write("(")
-		nw.write(nameToken)
-		nw.write(name)
-		nw.write(nodeToken)
-		nw.write("(")
-		nw.write(typeToken)
-		nw.write(typeDirectory)
+		nw.bw.string(entryToken)
+		nw.bw.string("(")
+		nw.bw.string(nameToken)
+		nw.bw.string(name)
+		nw.bw.string(nodeToken)
+		nw.bw.string("(")
+		nw.bw.string(typeToken)
+		nw.bw.string(typeDirectory)
 
 		newDirs = newDirs[len(name):]
 		if len(newDirs) >= len("/") {
@@ -143,49 +140,50 @@ func (nw *Writer) node(hdr *Header) error {
 	}
 	if hdr.Path != "" {
 		name := slashpath.Base(hdr.Path)
-		nw.write(entryToken)
-		nw.write("(")
-		nw.write(nameToken)
-		nw.write(name)
-		nw.write(nodeToken)
+		nw.bw.string(entryToken)
+		nw.bw.string("(")
+		nw.bw.string(nameToken)
+		nw.bw.string(name)
+		nw.bw.string(nodeToken)
 	}
 
 	switch hdr.Mode.Type() {
 	case 0: // regular
-		nw.write("(")
-		nw.write(typeToken)
-		nw.write(typeRegular)
+		nw.bw.string("(")
+		nw.bw.string(typeToken)
+		nw.bw.string(typeRegular)
 		if hdr.Mode&0o111 != 0 {
-			nw.write(executableToken)
-			nw.write("")
+			nw.bw.string(executableToken)
+			nw.bw.string("")
 		}
-		nw.write(contentsToken)
-		nw.writeInt(uint64(hdr.Size))
+		nw.bw.string(contentsToken)
+		nw.bw.uint64(uint64(hdr.Size))
 		nw.state = writerStateFile
 		nw.remaining = hdr.Size
 		nw.padding = int8(stringPaddingLength(int(hdr.Size % stringAlign)))
 	case fs.ModeDir:
-		nw.write("(")
-		nw.write(typeToken)
-		nw.write(typeDirectory)
+		nw.bw.string("(")
+		nw.bw.string(typeToken)
+		nw.bw.string(typeDirectory)
 		nw.state = writerStateSpecial
 	case fs.ModeSymlink:
-		nw.write("(")
-		nw.write(typeToken)
-		nw.write(typeSymlink)
-		nw.write(targetToken)
-		nw.write(hdr.LinkTarget)
-		nw.write(")")
+		nw.bw.string("(")
+		nw.bw.string(typeToken)
+		nw.bw.string(typeSymlink)
+		nw.bw.string(targetToken)
+		nw.bw.string(hdr.LinkTarget)
+		nw.bw.string(")")
 		if hdr.Path != "" {
-			nw.write(")")
+			nw.bw.string(")")
 		}
 		nw.state = writerStateSpecial
 	default:
 		return fmt.Errorf("nar: %s: cannot support mode %v", hdr.Path, hdr.Mode)
 	}
+	nw.bw.flush()
 	nw.lastPath = hdr.Path
 	nw.lastPathDir = hdr.Mode.IsDir()
-	return nw.err
+	return nw.bw.err
 }
 
 // Write writes to the current file in the NAR archive.
@@ -198,16 +196,16 @@ func (nw *Writer) Write(p []byte) (n int, err error) {
 	if nw.state != writerStateFile || nw.remaining <= 0 {
 		return 0, ErrWriteTooLong
 	}
-	if nw.err != nil {
-		return 0, nw.err
+	if nw.bw.err != nil {
+		return 0, nw.bw.err
 	}
 	tooLong := len(p) > int(nw.remaining)
 	if tooLong {
 		p = p[:nw.remaining]
 	}
 	if len(p) > 0 {
-		n, err = nw.w.Write(p)
-		nw.off += int64(n)
+		n, err = nw.bw.w.Write(p)
+		nw.bw.off += int64(n)
 		if err == nil && tooLong {
 			err = ErrWriteTooLong
 		}
@@ -221,7 +219,7 @@ func (nw *Writer) Write(p []byte) (n int, err error) {
 // if called immediately after the [Writer.WriteHeader] call
 // and before the first call to [Writer.Write].
 func (nw *Writer) Offset() int64 {
-	return nw.off
+	return nw.bw.off
 }
 
 // Close writes the footer of the NAR archive.
@@ -229,8 +227,8 @@ func (nw *Writer) Offset() int64 {
 // If the current file (from a prior call to [Writer.WriteHeader])
 // is not fully written, then Close returns an error.
 func (nw *Writer) Close() error {
-	if nw.err != nil {
-		return nw.err
+	if nw.bw.err != nil {
+		return nw.bw.err
 	}
 	switch nw.state {
 	case writerStateInit, writerStateRoot:
@@ -241,10 +239,10 @@ func (nw *Writer) Close() error {
 		}
 		nw.finishFile()
 		if nw.lastPath != "" {
-			nw.write(")") // finish directory entry
+			nw.bw.string(")") // finish directory entry
 		}
 	case writerStateEnd:
-		nw.err = errors.New("nar: writer closed")
+		nw.bw.err = errors.New("nar: writer closed")
 		return nil
 	}
 
@@ -253,105 +251,160 @@ func (nw *Writer) Close() error {
 		pop++
 	}
 	for i := 0; i < pop; i++ {
-		nw.write(")") // directory
-		nw.write(")") // parent's entry
+		nw.bw.string(")") // directory
+		nw.bw.string(")") // parent's entry
 	}
 	if nw.lastPath != "" || nw.lastPathDir {
-		nw.write(")") // root directory
+		nw.bw.string(")") // root directory
 	}
 
-	prevErr := nw.err
-	if nw.err == nil {
-		nw.err = errors.New("nar: writer closed")
+	nw.bw.flush()
+	prevErr := nw.bw.err
+	if nw.bw.err == nil {
+		nw.bw.err = errors.New("nar: writer closed")
 	}
 	return prevErr
 }
 
-func (nw *Writer) writeInt(x uint64) {
-	if nw.err != nil {
+func (nw *Writer) finishFile() error {
+	nw.bw.pad(int(nw.padding))
+	nw.bw.string(")")
+	return nw.bw.err
+}
+
+type bufWriter struct {
+	w io.Writer
+	// off is the number of bytes written to w.
+	// It does not include bytes written to buf.
+	off int64
+	// err is the first error returned by w.
+	err error
+	// buf is a temporary buffer used for writing.
+	// Its length is a multiple of stringAlign
+	// that is sufficient to hold any of the known tokens in the NAR format.
+	buf    [256]byte
+	bufLen int16
+}
+
+// Write passes through a write to the underlying writer.
+func (bw *bufWriter) Write(p []byte) (n int, err error) {
+	bw.flush()
+	n, err = bw.w.Write(p)
+	bw.off += int64(n)
+	return n, err
+}
+
+// flush writes any buffered data to the underlying writer.
+func (bw *bufWriter) flush() {
+	if bw.err != nil || bw.bufLen == 0 {
 		return
 	}
-	binary.LittleEndian.PutUint64(nw.buf[:8], x)
-	n, err := nw.w.Write(nw.buf[:8])
-	nw.off += int64(n)
+	n, err := bw.w.Write(bw.buf[:bw.bufLen])
+	copy(bw.buf[:], bw.buf[n:bw.bufLen])
+	bw.bufLen -= int16(n)
+	bw.off += int64(n)
 	if err != nil {
-		nw.err = fmt.Errorf("nar: %w", err)
+		bw.err = fmt.Errorf("nar: %w", err)
 	}
 }
 
-func (nw *Writer) write(s string) {
-	nw.writeInt(uint64(len(s)))
-	if len(s) == 0 || nw.err != nil {
+// uint64 writes a little-endian 64-bit integer.
+func (bw *bufWriter) uint64(x uint64) {
+	if bw.err != nil {
+		return
+	}
+	if int(bw.bufLen)+8 > len(bw.buf) {
+		bw.flush()
+		if bw.err != nil {
+			return
+		}
+	}
+	binary.LittleEndian.PutUint64(bw.buf[bw.bufLen:], x)
+	bw.bufLen += 8
+}
+
+// string writes a string prefixed by its length.
+func (bw *bufWriter) string(s string) {
+	bw.uint64(uint64(len(s)))
+	if len(s) == 0 || bw.err != nil {
+		return
+	}
+	n := padStringSize(len(s))
+	if n > len(bw.buf) {
+		bw.longString(s)
 		return
 	}
 
-	if len(s) > len(nw.buf) {
-		// Less common case: string/token does not fit in buffer.
-		// Try to use WriteString if possible, otherwise multiple Writes.
+	if int(bw.bufLen)+n > len(bw.buf) {
+		// String *will* fit in buffer once flushed.
+		nn := copy(bw.buf[bw.bufLen:], s)
+		bw.bufLen = int16(len(bw.buf))
+		n -= nn
+		s = s[nn:]
+		bw.flush()
+		if bw.err != nil {
+			return
+		}
+	}
 
-		if sw, ok := nw.w.(io.StringWriter); ok {
-			n, err := sw.WriteString(s)
-			nw.off += int64(n)
-			if err != nil {
-				nw.err = fmt.Errorf("nar: %w", err)
-				return
-			}
-		} else {
-			for i := 0; i < len(s); {
-				n := copy(nw.buf[:], s[i:])
-				nn, err := nw.w.Write(nw.buf[:n])
-				nw.off += int64(nn)
-				if err != nil {
-					nw.err = fmt.Errorf("nar: %w", err)
+	// String fits in buffer.
+	nn := copy(bw.buf[bw.bufLen:], s)
+	bw.bufLen += int16(nn)
+	bw.pad(n - len(s))
+}
+
+func (bw *bufWriter) longString(s string) {
+	// Less common case: string/token does not fit in buffer.
+	// Try to use WriteString if possible, otherwise multiple Writes.
+
+	if sw, ok := bw.w.(io.StringWriter); ok {
+		bw.flush()
+		if bw.err != nil {
+			return
+		}
+
+		n, err := sw.WriteString(s)
+		bw.off += int64(n)
+		if err != nil {
+			bw.err = fmt.Errorf("nar: %w", err)
+			return
+		}
+	} else {
+		for i := 0; i < len(s); {
+			if int(bw.bufLen) < len(bw.buf) {
+				bw.flush()
+				if bw.err != nil {
 					return
 				}
-				i += n
 			}
+			n := copy(bw.buf[bw.bufLen:], s[i:])
+			i += n
 		}
-
-		if padding := stringPaddingLength(len(s)); padding > 0 {
-			for i := 0; i < padding; i++ {
-				nw.buf[i] = 0
-			}
-			n, err := nw.w.Write(nw.buf[:padding])
-			nw.off += int64(n)
-			if err != nil {
-				nw.err = fmt.Errorf("nar: %w", err)
-			}
-		}
-		return
 	}
 
-	// Common case: string/token fits in buffer.
-	// Write string and padding in single Write.
-	copy(nw.buf[:], s)
-	n := padStringSize(len(s))
-	for i := len(s); i < n; i++ {
-		nw.buf[i] = 0
-	}
-	nn, err := nw.w.Write(nw.buf[:n])
-	nw.off += int64(nn)
-	if err != nil {
-		nw.err = fmt.Errorf("nar: %w", err)
-	}
+	bw.pad(stringPaddingLength(len(s)))
 }
 
-func (nw *Writer) finishFile() error {
-	if nw.err != nil {
-		return nw.err
+// pad writes n zero bytes.
+func (bw *bufWriter) pad(n int) {
+	if bw.err != nil {
+		return
 	}
-	if nw.padding > 0 {
-		for i := int8(0); i < nw.padding; i++ {
-			nw.buf[i] = 0
+	for int(bw.bufLen)+n > len(bw.buf) {
+		n -= len(bw.buf) - int(bw.bufLen)
+		for ; int(bw.bufLen) < len(bw.buf); bw.bufLen++ {
+			bw.buf[bw.bufLen] = 0
 		}
-		n, err := nw.w.Write(nw.buf[:nw.padding])
-		nw.off += int64(n)
-		if err != nil {
-			nw.err = fmt.Errorf("nar: %w", err)
+		bw.flush()
+		if bw.err != nil {
+			return
 		}
 	}
-	nw.write(")")
-	return nw.err
+	for n > 0 {
+		bw.buf[bw.bufLen] = 0
+		bw.bufLen++
+		n--
+	}
 }
 
 // treeDelta computes the directory ends (pops) and/or new directories to be created
