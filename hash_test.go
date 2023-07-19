@@ -22,6 +22,11 @@ var hashTests = []hashTest{
 	{SHA512, "8e959b75dae313da8cf4f72814fc143f8f7779c6eb9f7fa17299aeadb6889018501d289e4900f7e4331b99dec4b5433ac7d329eeb6dd26545e96e55b874be909", "04yjjw7bgjrcpjl4vfvdvi9sg3klhxmqkg9j6rkwkvh0jcy50fm064hi2vavblrfahpz7zbqrwpg3rz2ky18a7pyj6dl4z3v9srp5cf"},
 }
 
+var badHashTests = []string{
+	"",
+	"sha256:00000000000000000000000000000000000000000000",
+}
+
 func (test hashTest) base64(tb testing.TB) string {
 	bits, err := hex.DecodeString(test.base16)
 	if err != nil {
@@ -113,6 +118,31 @@ func TestParseHash(t *testing.T) {
 				t.Errorf("ParseHash(%q).SRI() = %q; want %q", s, got, want)
 			}
 		}
+	})
+
+	t.Run("Bad", func(t *testing.T) {
+		for _, test := range badHashTests {
+			got, err := ParseHash(test)
+			if err == nil {
+				t.Errorf("ParseHash(%q) = %v, <nil>; want _, <error>", test, got)
+			}
+		}
+	})
+}
+
+func FuzzParseHash(f *testing.F) {
+	for _, test := range hashTests {
+		f.Add(test.typ.String() + ":" + test.base16)
+		f.Add(test.typ.String() + ":" + test.base32)
+		f.Add(test.typ.String() + ":" + test.base64(f))
+		f.Add(test.sri(f))
+	}
+	for _, test := range badHashTests {
+		f.Add(test)
+	}
+
+	f.Fuzz(func(t *testing.T, s string) {
+		ParseHash(s)
 	})
 }
 

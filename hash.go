@@ -233,17 +233,23 @@ func (h *Hash) UnmarshalText(s []byte) error {
 	case isSRI && len(rest) != base64Encoding.EncodedLen(h.typ.Size()):
 		return fmt.Errorf("parse hash %q: wrong length for SRI of type %v", s, h.typ)
 	case len(rest) == hex.EncodedLen(h.typ.Size()):
-		if _, err := hex.Decode(h.hash[:], rest); err != nil {
+		if _, err := hex.Decode(h.hash[:h.typ.Size()], rest); err != nil {
 			return fmt.Errorf("parse hash %q: %v", s, err)
 		}
 	case len(rest) == nixbase32.EncodedLen(h.typ.Size()):
-		if _, err := nixbase32.Decode(h.hash[:], rest); err != nil {
+		if _, err := nixbase32.Decode(h.hash[:h.typ.Size()], rest); err != nil {
 			return fmt.Errorf("parse hash %q: %v", s, err)
 		}
 	case len(rest) == base64Encoding.EncodedLen(h.typ.Size()):
-		if _, err := base64Encoding.Decode(h.hash[:], rest); err != nil {
+		buf := make([]byte, base64Encoding.DecodedLen(len(rest)))
+		n, err := base64Encoding.Decode(buf, rest)
+		if err != nil {
 			return fmt.Errorf("parse hash %q: %v", s, err)
 		}
+		if n != h.typ.Size() {
+			return fmt.Errorf("parse hash %q: wrong length for hash of type %v", s, h.typ)
+		}
+		copy(h.hash[:h.typ.Size()], buf)
 	default:
 		return fmt.Errorf("parse hash %q: wrong length for hash of type %v", s, h.typ)
 	}
