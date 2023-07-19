@@ -215,6 +215,9 @@ func (info *NARInfo) UnmarshalText(src []byte) (err error) {
 		if i < 0 {
 			return fmt.Errorf("line %d: could not find ':'", lineno)
 		}
+		if i+len(": ") > len(src) {
+			return fmt.Errorf("line %d: %w", lineno, io.ErrUnexpectedEOF)
+		}
 		key := string(src[:i])
 		lineno += bytes.Count(src[:i+len(": ")], newline)
 		src = src[i+len(": "):]
