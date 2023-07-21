@@ -16,10 +16,19 @@ type StoreDirectory string
 // DefaultStoreDirectory is the default Nix store directory.
 const DefaultStoreDirectory StoreDirectory = "/nix/store"
 
-// StoreDirectoryFromEnv returns the Nix store directory in use
+// CleanStoreDirectory cleans an absolute slash-separated path as a [StoreDirectory].
+// It returns an error if the path is not absolute.
+func CleanStoreDirectory(path string) (StoreDirectory, error) {
+	if !slashpath.IsAbs(path) {
+		return "", fmt.Errorf("store directory %q is not absolute", path)
+	}
+	return StoreDirectory(slashpath.Clean(path)), nil
+}
+
+// StoreDirectoryFromEnvironment returns the Nix store directory in use
 // based on the NIX_STORE_DIR environment variable,
 // falling back to [DefaultStoreDirectory] if not set.
-func StoreDirectoryFromEnv() (StoreDirectory, error) {
+func StoreDirectoryFromEnvironment() (StoreDirectory, error) {
 	dir := os.Getenv("NIX_STORE_DIR")
 	if dir == "" {
 		return DefaultStoreDirectory, nil
