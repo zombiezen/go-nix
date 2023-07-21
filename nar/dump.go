@@ -5,7 +5,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	slashpath "path"
 	"path/filepath"
+	"sort"
 )
 
 // SourceFilterFunc is the interface for creating source filters.
@@ -25,10 +27,13 @@ func DumpPath(w io.Writer, path string) error {
 // and write it to the passed writer, filtering out any files where the filter
 // function returns false.
 func DumpPathFilter(w io.Writer, path string, filter SourceFilterFunc) error {
-	nw := NewWriter(w)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("dump nar: %w", err)
+	}
 	parent := filepath.Dir(path)
-	d := &dumper{
-		nw:         nw,
+	return dump(filepath.Base(path), fs.FileInfoToDirEntry(info), &dumpOptions{
+		nw:         NewWriter(w),
 		filterFunc: filter,
 		fsys:       os.DirFS(parent),
 		fsPathToFilterPath: func(p string) string {
@@ -37,31 +42,33 @@ func DumpPathFilter(w io.Writer, path string, filter SourceFilterFunc) error {
 		readlink: func(p string) (string, error) {
 			return os.Readlink(filepath.Join(parent, filepath.FromSlash(p)))
 		},
-	}
-	info, err := os.Lstat(path)
+	})
+}
+
+// A Dumper contains options for creating a NAR from a filesystem object.
+type Dumper struct {
+	// FilterFunc filters out files if not nil.
+	FilterFunc SourceFilterFunc
+	// ReadLink returns the link target of the given path of the filesystem.
+	ReadLink func(string) (string, error)
+}
+
+// Dump serializes an object in the given filesystem to NAR format,
+// writing it to the given writer.
+func (d *Dumper) Dump(w io.Writer, fsys fs.FS, path string) error {
+	rootEntry, err := lstatFS(fsys, path)
 	if err != nil {
 		return fmt.Errorf("dump nar: %w", err)
 	}
-	if !info.IsDir() {
-		err := d.dump("", filepath.Base(path), fs.FileInfoToDirEntry(info))
-		if err == fs.SkipDir {
-			return fmt.Errorf("dump nar: entire path is excluded")
-		}
-		if err != nil {
-			return fmt.Errorf("dump nar: %w", err)
-		}
-	} else {
-		if err := d.recursive(filepath.Base(path)); err != nil {
-			return fmt.Errorf("dump nar: %w", err)
-		}
-	}
-	if err := nw.Close(); err != nil {
-		return fmt.Errorf("dump nar: %w", err)
-	}
-	return nil
+	return dump(path, rootEntry, &dumpOptions{
+		nw:         NewWriter(w),
+		filterFunc: d.FilterFunc,
+		fsys:       fsys,
+		readlink:   d.ReadLink,
+	})
 }
 
-type dumper struct {
+type dumpOptions struct {
 	nw                 *Writer
 	fsys               fs.FS
 	filterFunc         SourceFilterFunc
@@ -69,22 +76,7 @@ type dumper struct {
 	fsPathToFilterPath func(string) string
 }
 
-func (d *dumper) recursive(rootPath string) error {
-	return fs.WalkDir(d.fsys, rootPath, func(path string, ent fs.DirEntry, err error) error {
-		var outPath string
-		switch {
-		case path == rootPath:
-			outPath = ""
-		case rootPath == ".":
-			outPath = path
-		default:
-			outPath = path[len(rootPath)+len("/"):]
-		}
-		return d.dump(outPath, path, ent)
-	})
-}
-
-func (d *dumper) filter(fsPath string, mode fs.FileMode) bool {
+func (d *dumpOptions) filter(fsPath string, mode fs.FileMode) bool {
 	if d.filterFunc == nil {
 		return true
 	}
@@ -95,7 +87,42 @@ func (d *dumper) filter(fsPath string, mode fs.FileMode) bool {
 	return d.filterFunc(filterPath, mode)
 }
 
-func (d *dumper) dump(outPath string, fsPath string, ent fs.DirEntry) error {
+func dump(path string, lstatEntry fs.DirEntry, opts *dumpOptions) error {
+	if !lstatEntry.IsDir() {
+		err := dumpSingle("", path, lstatEntry, opts)
+		if err == fs.SkipDir {
+			return fmt.Errorf("dump nar: entire path is excluded")
+		}
+		if err != nil {
+			return fmt.Errorf("dump nar: %w", err)
+		}
+	} else {
+		if err := dumpRecursive(path, opts); err != nil {
+			return fmt.Errorf("dump nar: %w", err)
+		}
+	}
+	if err := opts.nw.Close(); err != nil {
+		return fmt.Errorf("dump nar: %w", err)
+	}
+	return nil
+}
+
+func dumpRecursive(rootPath string, opts *dumpOptions) error {
+	return fs.WalkDir(opts.fsys, rootPath, func(path string, ent fs.DirEntry, err error) error {
+		var outPath string
+		switch {
+		case path == rootPath:
+			outPath = ""
+		case rootPath == ".":
+			outPath = path
+		default:
+			outPath = path[len(rootPath)+len("/"):]
+		}
+		return dumpSingle(outPath, path, ent, opts)
+	})
+}
+
+func dumpSingle(outPath string, fsPath string, ent fs.DirEntry, opts *dumpOptions) error {
 	switch ent.Type() {
 	case 0:
 		info, err := ent.Info()
@@ -106,11 +133,11 @@ func (d *dumper) dump(outPath string, fsPath string, ent fs.DirEntry) error {
 		if mode.Type() != 0 {
 			return fmt.Errorf("%s changed mode from listing=%v to stat=%v", fsPath, ent.Type(), mode)
 		}
-		if !d.filter(fsPath, mode) {
+		if !opts.filter(fsPath, mode) {
 			return nil
 		}
 
-		err = d.nw.WriteHeader(&Header{
+		err = opts.nw.WriteHeader(&Header{
 			Path: outPath,
 			Mode: mode,
 			Size: info.Size(),
@@ -118,20 +145,20 @@ func (d *dumper) dump(outPath string, fsPath string, ent fs.DirEntry) error {
 		if err != nil {
 			return err
 		}
-		f, err := d.fsys.Open(fsPath)
+		f, err := opts.fsys.Open(fsPath)
 		if err != nil {
 			return err
 		}
-		_, err = io.Copy(d.nw, f)
+		_, err = io.Copy(opts.nw, f)
 		f.Close()
 		if err != nil {
 			return err
 		}
 	case fs.ModeDir:
-		if !d.filter(fsPath, fs.ModeDir|0o555) {
+		if !opts.filter(fsPath, fs.ModeDir|0o555) {
 			return fs.SkipDir
 		}
-		err := d.nw.WriteHeader(&Header{
+		err := opts.nw.WriteHeader(&Header{
 			Path: outPath,
 			Mode: fs.ModeDir,
 		})
@@ -139,17 +166,17 @@ func (d *dumper) dump(outPath string, fsPath string, ent fs.DirEntry) error {
 			return err
 		}
 	case fs.ModeSymlink:
-		if !d.filter(fsPath, fs.ModeSymlink|0o777) {
+		if !opts.filter(fsPath, fs.ModeSymlink|0o777) {
 			return nil
 		}
-		if d.readlink == nil {
+		if opts.readlink == nil {
 			return fmt.Errorf("cannot process symlink %q on given filesystem", outPath)
 		}
-		target, err := d.readlink(fsPath)
+		target, err := opts.readlink(fsPath)
 		if err != nil {
 			return err
 		}
-		err = d.nw.WriteHeader(&Header{
+		err = opts.nw.WriteHeader(&Header{
 			Path:       outPath,
 			Mode:       fs.ModeSymlink,
 			LinkTarget: target,
@@ -161,4 +188,34 @@ func (d *dumper) dump(outPath string, fsPath string, ent fs.DirEntry) error {
 		return fmt.Errorf("unknown type %v for file %v", ent.Type(), fsPath)
 	}
 	return nil
+}
+
+func lstatFS(fsys fs.FS, name string) (fs.DirEntry, error) {
+	if name == "." {
+		info, err := fs.Stat(fsys, ".")
+		if err != nil {
+			return nil, err
+		}
+		return fs.FileInfoToDirEntry(info), nil
+	}
+	parent := slashpath.Dir(name)
+	entries, err := fs.ReadDir(fsys, parent)
+	if err != nil {
+		return nil, &fs.PathError{
+			Op:   "lstat",
+			Path: name,
+			Err:  err,
+		}
+	}
+	i := sort.Search(len(entries), func(i int) bool {
+		return entries[i].Name() >= name
+	})
+	if i >= len(entries) || entries[i].Name() != name {
+		return nil, &fs.PathError{
+			Op:   "lstat",
+			Path: name,
+			Err:  fs.ErrNotExist,
+		}
+	}
+	return entries[i], nil
 }

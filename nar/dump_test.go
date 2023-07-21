@@ -5,49 +5,49 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	slashpath "path"
 	"path/filepath"
-	"runtime"
+	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/google/go-cmp/cmp"
 )
 
-func TestDumpPath(t *testing.T) {
+func TestDumper(t *testing.T) {
 	for _, test := range narTests {
 		if test.err || test.ignoreContents {
 			continue
 		}
 		t.Run(test.name, func(t *testing.T) {
+			fsys := make(fstest.MapFS)
+			symlinks := make(map[string]string)
 			for _, ent := range test.want {
-				if ent.header.Mode&0o111 != 0 && runtime.GOOS == "windows" {
-					t.Skipf("Cannot test on Windows due to %q being executable", ent.header.Path)
+				path := slashpath.Join("root", ent.header.Path)
+				fsys[path] = &fstest.MapFile{
+					Mode: ent.header.Mode,
+					Data: []byte(ent.data),
+				}
+				if ent.header.Mode.Type() == fs.ModeSymlink {
+					symlinks[path] = ent.header.LinkTarget
 				}
 			}
-
-			// Set up in filesystem.
-			dir := t.TempDir()
-			for _, ent := range test.want {
-				path := filepath.Join(dir, "root", filepath.FromSlash(ent.header.Path))
-				switch ent.header.Mode.Type() {
-				case 0:
-					if err := os.WriteFile(path, []byte(ent.data), ent.header.Mode.Perm()); err != nil {
-						t.Fatal(err)
+			d := &Dumper{
+				ReadLink: func(path string) (string, error) {
+					target, ok := symlinks[path]
+					if !ok {
+						return "", &fs.PathError{
+							Op:   "readlink",
+							Path: path,
+							Err:  fs.ErrInvalid,
+						}
 					}
-				case fs.ModeDir:
-					if err := os.Mkdir(path, 0o777); err != nil {
-						t.Fatal(err)
-					}
-				case fs.ModeSymlink:
-					if err := os.Symlink(ent.header.LinkTarget, path); err != nil {
-						t.Fatal(err)
-					}
-				default:
-					t.Fatalf("For path %q, unknown mode %q", ent.header.Path, ent.header.Mode)
-				}
+					return target, nil
+				},
 			}
 
 			var buf bytes.Buffer
-			if err := DumpPath(&buf, filepath.Join(dir, "root")); err != nil {
+			if err := d.Dump(&buf, fsys, "root"); err != nil {
 				t.Error(err)
 			}
 
@@ -60,6 +60,22 @@ func TestDumpPath(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("UnknownType", func(t *testing.T) {
+		fsys := fstest.MapFS{
+			"a": &fstest.MapFile{
+				Mode: fs.ModeNamedPipe | 0o644,
+			},
+		}
+		err := new(Dumper).Dump(io.Discard, fsys, "a")
+		if err == nil {
+			t.Fatal("DumpPath did not return an error")
+		}
+		const want = "unknown type"
+		if got := err.Error(); !strings.Contains(got, want) {
+			t.Errorf("DumpPath(...) = %s; did not contain %q", got, want)
+		}
+	})
 }
 
 func TestDumpPathFilter(t *testing.T) {
