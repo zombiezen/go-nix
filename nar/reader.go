@@ -35,6 +35,8 @@ type Reader struct {
 	buf   [16]byte
 	state int8
 
+	allowTrailingData bool
+
 	// padding is the number of padding bytes that trail after the file contents
 	// (only valid if state == readerStateFile).
 	padding int8
@@ -54,6 +56,14 @@ type Reader struct {
 // NewReader creates a new [Reader] reading from r.
 func NewReader(r io.Reader) *Reader {
 	return &Reader{r: r}
+}
+
+// AllowTrailingData causes the Reader to halt reading
+// when it reaches the end of the NAR data.
+// By default, the Reader returns an error
+// if there is data after the NAR footer.
+func (nr *Reader) AllowTrailingData() {
+	nr.allowTrailingData = true
 }
 
 // Next advances to the next entry in the NAR archive.
@@ -296,6 +306,11 @@ func (nr *Reader) node(hdr *Header) error {
 // verifyEOF consumes a single byte to verify that the reader is at EOF.
 // r.err will always be non-nil after verifyEOF returns.
 func (nr *Reader) verifyEOF() {
+	if nr.allowTrailingData {
+		nr.err = io.EOF
+		return
+	}
+
 	switch _, err := io.ReadFull(nr.r, nr.buf[:1]); err {
 	case nil:
 		nr.off++

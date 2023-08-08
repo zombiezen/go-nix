@@ -2,6 +2,7 @@ package nar
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -834,6 +835,57 @@ func TestReader(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("TrailingData", func(t *testing.T) {
+		t.Run("Default", func(t *testing.T) {
+			f, err := os.Open(filepath.Join("testdata", "hello-world.nar"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			buf := new(bytes.Buffer)
+			if _, err := io.Copy(buf, f); err != nil {
+				t.Fatal(err)
+			}
+			trailingData := []byte{0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0x12, 0x34}
+			buf.Write(trailingData)
+			nr := NewReader(buf)
+
+			if _, err := nr.Next(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := nr.Next(); !errors.Is(err, errTrailingData) {
+				t.Errorf("Final Next() error = %v; want %v", err, errTrailingData)
+			}
+		})
+
+		t.Run("Allow", func(t *testing.T) {
+			f, err := os.Open(filepath.Join("testdata", "hello-world.nar"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			buf := new(bytes.Buffer)
+			if _, err := io.Copy(buf, f); err != nil {
+				t.Fatal(err)
+			}
+			trailingData := []byte{0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0x12, 0x34}
+			buf.Write(trailingData)
+			nr := NewReader(buf)
+			nr.AllowTrailingData()
+
+			if _, err := nr.Next(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := nr.Next(); err != io.EOF {
+				t.Errorf("Final Next() error = %v; want %v", err, io.EOF)
+			}
+
+			if diff := cmp.Diff(trailingData, buf.Bytes()); diff != "" {
+				t.Errorf("remaining data (-want +got):\n%s", diff)
+			}
+		})
+	})
 }
 
 func BenchmarkReader(b *testing.B) {
