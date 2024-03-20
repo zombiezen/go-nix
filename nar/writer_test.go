@@ -292,8 +292,10 @@ func BenchmarkWriter(b *testing.B) {
 	}
 }
 
+const bufWriterSize = len(bufWriter{}.buf)
+
 func TestBufWriterString(t *testing.T) {
-	const overflowSize = len(bufWriter{}.buf) + 1
+	const overflowSize = bufWriterSize + 1
 
 	t.Run("LongString", func(t *testing.T) {
 		buf := new(bytes.Buffer)
@@ -324,18 +326,58 @@ func TestBufWriterString(t *testing.T) {
 			t.Errorf("-want +got:\n%s", diff)
 		}
 	})
+
+	t.Run("StringAtEndOfBuffer", func(t *testing.T) {
+		const badBits = 0xbaadf00dbaadf00d
+
+		buf := new(bytes.Buffer)
+		bw := &bufWriter{w: onlyWriter{buf}}
+		// Fill buffer with garbage.
+		for i := 0; i < bufWriterSize/8; i++ {
+			bw.uint64(badBits)
+		}
+		// Write bytes to misalign by 1 byte.
+		if _, err := bw.Write(bytes.Repeat([]byte("x"), 7)); err != nil {
+			t.Fatal(err)
+		}
+		bw.pad()
+		// Fill to right next to end.
+		const yLen = bufWriterSize - 8*3
+		bw.string(strings.Repeat("y", yLen))
+		bw.string("z")
+		bw.flush()
+
+		want := make([]byte, 0, bufWriterSize+8+bufWriterSize)
+		for i := 0; i < bufWriterSize/8; i++ {
+			want = binary.LittleEndian.AppendUint64(want, badBits)
+		}
+		for i := 0; i < 7; i++ {
+			want = append(want, 'x')
+		}
+		want = append(want, 0)
+		want = binary.LittleEndian.AppendUint64(want, uint64(yLen))
+		for i := 0; i < yLen; i++ {
+			want = append(want, 'y')
+		}
+		want = binary.LittleEndian.AppendUint64(want, 1)
+		want = append(want, 'z', 0, 0, 0, 0, 0, 0, 0)
+
+		if diff := cmp.Diff(want, buf.Bytes()); diff != "" {
+			t.Errorf("-want +got:\n%s", diff)
+		}
+	})
 }
 
 func TestBufWriterUint64(t *testing.T) {
 	buf := new(bytes.Buffer)
 	bw := &bufWriter{
 		w:      buf,
-		bufLen: int16(len(bufWriter{}.buf)) - 1,
+		bufLen: int16(bufWriterSize) - 1,
 	}
 	bw.uint64(42)
 	bw.flush()
 
-	want := bytes.Repeat([]byte{0}, len(bufWriter{}.buf))
+	want := bytes.Repeat([]byte{0}, bufWriterSize)
 	want = binary.LittleEndian.AppendUint64(want, 42)
 	if diff := cmp.Diff(want, buf.Bytes()); diff != "" {
 		t.Errorf("-want +got:\n%s", diff)
@@ -348,12 +390,12 @@ func TestBufWriterPad(t *testing.T) {
 	bw := &bufWriter{
 		w:      buf,
 		off:    initialOffset,
-		bufLen: int16(len(bufWriter{}.buf)) - 1,
+		bufLen: int16(bufWriterSize) - 1,
 	}
 	bw.pad()
 	bw.flush()
 
-	want := bytes.Repeat([]byte{0}, len(bufWriter{}.buf)+stringAlign-initialOffset)
+	want := bytes.Repeat([]byte{0}, bufWriterSize+stringAlign-initialOffset)
 	if diff := cmp.Diff(want, buf.Bytes()); diff != "" {
 		t.Errorf("-want +got:\n%s", diff)
 	}

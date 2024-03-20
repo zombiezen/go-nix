@@ -286,6 +286,9 @@ type bufWriter struct {
 // Write passes through a write to the underlying writer.
 func (bw *bufWriter) Write(p []byte) (n int, err error) {
 	bw.flush()
+	if bw.err != nil {
+		return 0, bw.err
+	}
 	n, err = bw.w.Write(p)
 	bw.off += int64(n)
 	return n, err
@@ -336,9 +339,11 @@ func (bw *bufWriter) string(s string) {
 	if int(bw.bufLen)+n > len(bw.buf) {
 		// String *will* fit in buffer once flushed.
 		nn := copy(bw.buf[bw.bufLen:], s)
-		bw.bufLen = int16(len(bw.buf))
-		n -= nn
 		s = s[nn:]
+		bw.bufLen += int16(nn)
+		for ; bw.bufLen < int16(len(bw.buf)); bw.bufLen++ {
+			bw.buf[bw.bufLen] = 0
+		}
 		bw.flush()
 		if bw.err != nil {
 			return
