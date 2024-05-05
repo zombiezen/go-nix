@@ -2,8 +2,15 @@ package nix
 
 import (
 	"encoding/hex"
+	"hash"
+	"io"
 	"testing"
 )
+
+var _ interface {
+	hash.Hash
+	io.StringWriter
+} = (*Hasher)(nil)
 
 type hashTest struct {
 	typ    HashType

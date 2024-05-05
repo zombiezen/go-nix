@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"hash"
+	"io"
 
 	"zombiezen.com/go/nix/nixbase32"
 )
@@ -311,6 +312,12 @@ func (h *Hasher) Type() HashType {
 // It never returns an error.
 func (h *Hasher) Write(p []byte) (n int, err error) {
 	return h.hash.Write(p)
+}
+
+// WriteString adds more data to the running hash.
+// It never returns an error.
+func (h *Hasher) WriteString(s string) (n int, err error) {
+	return io.WriteString(h.hash, s)
 }
 
 // Sum appends the current hash to b and returns the resulting slice.
