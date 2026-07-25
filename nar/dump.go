@@ -169,14 +169,18 @@ func dumpSingle(outPath string, fsPath string, ent fs.DirEntry, opts *dumpOption
 		if err != nil {
 			return err
 		}
-		f, err := opts.fsys.Open(fsPath)
-		if err != nil {
-			return err
-		}
-		_, err = io.Copy(opts.nw, f)
-		f.Close()
-		if err != nil {
-			return err
+
+		if !opts.nw.sparseAllocate {
+			f, err := opts.fsys.Open(fsPath)
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(opts.nw, f)
+			f.Close()
+
+			if err != nil {
+				return err
+			}
 		}
 	case fs.ModeDir:
 		if !opts.filter(fsPath, fs.ModeDir|0o555) {

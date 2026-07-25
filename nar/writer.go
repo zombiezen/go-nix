@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	slashpath "path"
 	"strings"
 )
@@ -231,12 +230,19 @@ func (nw *Writer) node(hdr *Header) error {
 	return nw.bw.err
 }
 
+// allocatable is the interface to check for the operations we need to support
+// allocation-type dumping
+type allocatable interface {
+	Truncate(size int64) error
+	Seek(offset int64, whence int) (ret int64, err error)
+}
+
 // allocateFile handles allocating space in the NAR file to hold future content when sparseAllocation mode
 // is used.
 func (nw *Writer) allocateFile() error {
 	// Get the position of the start of the file (most likely the user is about to use
 	// allocateCallback to start backfilling the data)
-	if osFile, ok := nw.bw.w.(*os.File); ok {
+	if osFile, ok := nw.bw.w.(allocatable); ok {
 		// Expand the file to the new size
 		if err := osFile.Truncate(nw.bw.off + nw.remaining); err != nil {
 			return err
