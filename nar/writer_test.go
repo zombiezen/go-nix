@@ -3,6 +3,7 @@ package nar
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -236,6 +237,74 @@ func TestWriter(t *testing.T) {
 	})
 }
 
+func TestSparseWriter(t *testing.T) {
+	// Test the sparse allocator mode produces similar results to regular writing.
+
+	tempDir := t.TempDir()
+
+	for _, test := range narTests {
+		if test.ignoreContents || test.err {
+			continue
+		}
+		t.Run(fmt.Sprintf("%sWithSparseAllocation", test.name), func(t *testing.T) {
+			// Create a temp NAR file
+			narPath := filepath.Join(tempDir, fmt.Sprintf("%s.nar", t.Name()))
+			if err := os.MkdirAll(filepath.Dir(narPath), os.FileMode(0777)); err != nil {
+				t.Fatal(err)
+			}
+			// Open as create/write only
+			narFile, err := os.OpenFile(narPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, os.FileMode(0777))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer narFile.Close()
+
+			// Unlike the regular test, we should read 0's of the correct length.
+			want, err := os.ReadFile(filepath.Join("testdata", test.dataFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			cb := func(hdr Header) error {
+				// For the test case, read the file content out of the example NAR and
+				// emplace it into the pre-allocated space here.
+				if _, err := narFile.Seek(hdr.ContentOffset, io.SeekStart); err != nil {
+					return err
+				}
+				if _, err := io.Copy(narFile, bytes.NewBuffer(want[hdr.ContentOffset:hdr.ContentOffset+hdr.Size])); err != nil {
+					return err
+				}
+				// No need to reset the pointer since it should already be properly positioned in this case.
+				return nil
+			}
+
+			nw := NewWriter(narFile, SparseAllocate(cb))
+			for i, ent := range test.want {
+				if err := nw.WriteHeader(ent.header); err != nil {
+					t.Errorf("WriteHeader#%d(%+v): %v", i+1, ent.header, err)
+				}
+				if ent.header.Mode.IsRegular() {
+					if got := nw.Offset(); got != ent.header.ContentOffset {
+						t.Errorf("Offset() = %d; want %d", got, ent.header.ContentOffset)
+					}
+				}
+			}
+			if err := nw.Close(); err != nil {
+				t.Error("Close:", err)
+			}
+
+			got, err := os.ReadFile(narPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("-want +got:\n%s", diff)
+			}
+		})
+	}
+}
+
 func BenchmarkWriter(b *testing.B) {
 	buf := new(bytes.Buffer)
 
@@ -292,19 +361,19 @@ func BenchmarkWriter(b *testing.B) {
 	}
 }
 
-const bufWriterSize = len(bufWriter{}.buf)
+const bufWriterSize = len(BufWriter{}.buf)
 
 func TestBufWriterString(t *testing.T) {
 	const overflowSize = bufWriterSize + 1
 
 	t.Run("LongString", func(t *testing.T) {
 		buf := new(bytes.Buffer)
-		bw := &bufWriter{w: buf}
+		bw := &BufWriter{w: buf}
 		s := strings.Repeat("x", overflowSize)
-		bw.string(s)
-		bw.flush()
+		bw.String(s)
+		bw.Flush()
 
-		want := make([]byte, 8+overflowSize+(stringAlign-1))
+		want := make([]byte, 8+overflowSize+(StringAlign-1))
 		binary.LittleEndian.PutUint64(want, uint64(overflowSize))
 		copy(want[8:], s)
 		if diff := cmp.Diff(want, buf.Bytes()); diff != "" {
@@ -314,12 +383,12 @@ func TestBufWriterString(t *testing.T) {
 
 	t.Run("LongStringWithoutWriteString", func(t *testing.T) {
 		buf := new(bytes.Buffer)
-		bw := &bufWriter{w: onlyWriter{buf}}
+		bw := &BufWriter{w: onlyWriter{buf}}
 		s := strings.Repeat("x", overflowSize)
-		bw.string(s)
-		bw.flush()
+		bw.String(s)
+		bw.Flush()
 
-		want := make([]byte, 8+overflowSize+(stringAlign-1))
+		want := make([]byte, 8+overflowSize+(StringAlign-1))
 		binary.LittleEndian.PutUint64(want, uint64(overflowSize))
 		copy(want[8:], s)
 		if diff := cmp.Diff(want, buf.Bytes()); diff != "" {
@@ -331,21 +400,21 @@ func TestBufWriterString(t *testing.T) {
 		const badBits = 0xbaadf00dbaadf00d
 
 		buf := new(bytes.Buffer)
-		bw := &bufWriter{w: onlyWriter{buf}}
+		bw := &BufWriter{w: onlyWriter{buf}}
 		// Fill buffer with garbage.
 		for i := 0; i < bufWriterSize/8; i++ {
-			bw.uint64(badBits)
+			bw.Uint64(badBits)
 		}
 		// Write bytes to misalign by 1 byte.
 		if _, err := bw.Write(bytes.Repeat([]byte("x"), 7)); err != nil {
 			t.Fatal(err)
 		}
-		bw.pad()
+		bw.Pad()
 		// Fill to right next to end.
 		const yLen = bufWriterSize - 8*3
-		bw.string(strings.Repeat("y", yLen))
-		bw.string("z")
-		bw.flush()
+		bw.String(strings.Repeat("y", yLen))
+		bw.String("z")
+		bw.Flush()
 
 		want := make([]byte, 0, bufWriterSize+8+bufWriterSize)
 		for i := 0; i < bufWriterSize/8; i++ {
@@ -370,12 +439,12 @@ func TestBufWriterString(t *testing.T) {
 
 func TestBufWriterUint64(t *testing.T) {
 	buf := new(bytes.Buffer)
-	bw := &bufWriter{
+	bw := &BufWriter{
 		w:      buf,
 		bufLen: int16(bufWriterSize) - 1,
 	}
-	bw.uint64(42)
-	bw.flush()
+	bw.Uint64(42)
+	bw.Flush()
 
 	want := bytes.Repeat([]byte{0}, bufWriterSize)
 	want = binary.LittleEndian.AppendUint64(want, 42)
@@ -387,15 +456,15 @@ func TestBufWriterUint64(t *testing.T) {
 func TestBufWriterPad(t *testing.T) {
 	buf := new(bytes.Buffer)
 	const initialOffset = 2
-	bw := &bufWriter{
+	bw := &BufWriter{
 		w:      buf,
 		off:    initialOffset,
 		bufLen: int16(bufWriterSize) - 1,
 	}
-	bw.pad()
-	bw.flush()
+	bw.Pad()
+	bw.Flush()
 
-	want := bytes.Repeat([]byte{0}, bufWriterSize+stringAlign-initialOffset)
+	want := bytes.Repeat([]byte{0}, bufWriterSize+StringAlign-initialOffset)
 	if diff := cmp.Diff(want, buf.Bytes()); diff != "" {
 		t.Errorf("-want +got:\n%s", diff)
 	}
@@ -494,7 +563,7 @@ func TestTreeDelta(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		pop, newDirs, err := treeDelta(test.oldPath, test.oldIsDir, test.newPath)
+		pop, newDirs, err := TreeDelta(test.oldPath, test.oldIsDir, test.newPath)
 		if pop != test.pop || newDirs != test.newDirs || (err != nil) != test.err {
 			errString := "<nil>"
 			if test.err {

@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"zombiezen.com/go/nix/nar"
+	"github.com/wrouesnel/go-nix/nar"
 )
 
 func newNARCatCommand() *cobra.Command {

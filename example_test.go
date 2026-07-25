@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"zombiezen.com/go/nix"
+	"github.com/wrouesnel/go-nix"
 )
 
 func ExampleHasher() {

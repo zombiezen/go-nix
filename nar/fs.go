@@ -17,12 +17,8 @@ type FS struct {
 
 // NewFS returns a new [FS] from a NAR listing
 // and a random access reader to the NAR file.
-// NewFS will return an error if the listing does not have a directory at its root.
 // The listing should not be modified while the returned FS is in use.
 func NewFS(r io.ReaderAt, ls *Listing) (*FS, error) {
-	if !ls.Root.Mode.IsDir() {
-		return nil, fmt.Errorf("new nar fs: not a directory")
-	}
 	return &FS{r, ls}, nil
 }
 

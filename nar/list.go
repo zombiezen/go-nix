@@ -130,7 +130,7 @@ func (node *ListingNode) marshal(dst []byte) ([]byte, error) {
 	dst = append(dst, `{"type":"`...)
 	switch node.Mode.Type() {
 	case 0:
-		dst = append(dst, typeRegular...)
+		dst = append(dst, TypeRegular...)
 		dst = append(dst, `","executable":`...)
 		if node.Mode&0o111 != 0 {
 			dst = append(dst, "true"...)
@@ -142,7 +142,7 @@ func (node *ListingNode) marshal(dst []byte) ([]byte, error) {
 		dst = append(dst, `,"narOffset":`...)
 		dst = strconv.AppendInt(dst, node.ContentOffset, 10)
 	case fs.ModeDir:
-		dst = append(dst, typeDirectory...)
+		dst = append(dst, TypeDirectory...)
 		dst = append(dst, `","entries":{`...)
 		names := make([]string, 0, len(node.Entries))
 		for name := range node.Entries {
@@ -166,7 +166,7 @@ func (node *ListingNode) marshal(dst []byte) ([]byte, error) {
 		}
 		dst = append(dst, '}')
 	case fs.ModeSymlink:
-		dst = append(dst, typeSymlink...)
+		dst = append(dst, TypeSymlink...)
 		dst = append(dst, `","target":`...)
 		if node.LinkTarget == "" {
 			return dst, fmt.Errorf("marshal nar listing: symlink target empty")
@@ -184,7 +184,7 @@ func (node *ListingNode) marshal(dst []byte) ([]byte, error) {
 }
 
 func (node *ListingNode) unmarshal(path string, data []byte) error {
-	if err := validatePath(path); err != nil {
+	if err := ValidatePath(path); err != nil {
 		return err
 	}
 	node.Path = path
@@ -203,11 +203,11 @@ func (node *ListingNode) unmarshal(path string, data []byte) error {
 		return fmt.Errorf("type: %v", err)
 	}
 	switch typ {
-	case typeRegular:
+	case TypeRegular:
 		node.Mode = modeRegular
-	case typeDirectory:
+	case TypeDirectory:
 		node.Mode = modeDirectory
-	case typeSymlink:
+	case TypeSymlink:
 		node.Mode = modeSymlink
 	default:
 		return fmt.Errorf("type: unknown type %q", typ)
@@ -267,7 +267,7 @@ func (node *ListingNode) unmarshal(path string, data []byte) error {
 			}
 			node.Entries = make(map[string]*ListingNode, len(rawEntries))
 			for entryName, rawNode := range rawEntries {
-				if err := validateFilename(entryName); err != nil {
+				if err := ValidateFilename(entryName); err != nil {
 					return fmt.Errorf("entries: %v", err)
 				}
 				newNode := new(ListingNode)

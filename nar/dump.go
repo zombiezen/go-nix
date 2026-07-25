@@ -17,23 +17,45 @@ import (
 // [builtins.filterSource]: https://nixos.org/manual/nix/stable/language/builtins.html#builtins-filterSource
 type SourceFilterFunc func(path string, mode fs.FileMode) bool
 
+// DumpPathOptions allow modifying the behavior of the DumpPath and DumpPathFilter functions.
+type DumpPathOptions func(d *dumpPathOptions)
+
+type dumpPathOptions struct {
+	writerOptions []WriterOptions
+}
+
+// WriterOption applies WriterOptions to a Dumper
+func WriterOption(writerOption WriterOptions) DumpPathOptions {
+	return func(d *dumpPathOptions) {
+		if d.writerOptions == nil {
+			d.writerOptions = make([]WriterOptions, 0)
+		}
+		d.writerOptions = append(d.writerOptions, writerOption)
+	}
+}
+
 // DumpPath will serialize a path on the local file system to NAR format,
 // and write it to the passed writer.
-func DumpPath(w io.Writer, path string) error {
-	return DumpPathFilter(w, path, nil)
+func DumpPath(w io.Writer, path string, options ...DumpPathOptions) error {
+	return DumpPathFilter(w, path, nil, options...)
 }
 
 // DumpPathFilter will serialize a path on the local file system to NAR format,
 // and write it to the passed writer, filtering out any files where the filter
 // function returns false.
-func DumpPathFilter(w io.Writer, path string, filter SourceFilterFunc) error {
+func DumpPathFilter(w io.Writer, path string, filter SourceFilterFunc, options ...DumpPathOptions) error {
+	dpo := new(dumpPathOptions)
+	for _, opt := range options {
+		opt(dpo)
+	}
+
 	info, err := os.Lstat(path)
 	if err != nil {
 		return fmt.Errorf("dump nar: %w", err)
 	}
 	parent := filepath.Dir(path)
 	return dump(filepath.Base(path), fs.FileInfoToDirEntry(info), &dumpOptions{
-		nw:         NewWriter(w),
+		nw:         NewWriter(w, dpo.writerOptions...),
 		filterFunc: filter,
 		fsys:       os.DirFS(parent),
 		fsPathToFilterPath: func(p string) string {
@@ -51,6 +73,8 @@ type Dumper struct {
 	FilterFunc SourceFilterFunc
 	// ReadLink returns the link target of the given path of the filesystem.
 	ReadLink func(string) (string, error)
+	// options is the supplied options configuration from when the dumper was initialized.
+	options dumpPathOptions
 }
 
 // Dump serializes an object in the given filesystem to NAR format,
@@ -145,14 +169,18 @@ func dumpSingle(outPath string, fsPath string, ent fs.DirEntry, opts *dumpOption
 		if err != nil {
 			return err
 		}
-		f, err := opts.fsys.Open(fsPath)
-		if err != nil {
-			return err
-		}
-		_, err = io.Copy(opts.nw, f)
-		f.Close()
-		if err != nil {
-			return err
+
+		if !opts.nw.sparseAllocate {
+			f, err := opts.fsys.Open(fsPath)
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(opts.nw, f)
+			f.Close()
+
+			if err != nil {
+				return err
+			}
 		}
 	case fs.ModeDir:
 		if !opts.filter(fsPath, fs.ModeDir|0o555) {

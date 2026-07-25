@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"zombiezen.com/go/nix/nixbase32"
+	"github.com/wrouesnel/go-nix/nixbase32"
 )
 
 // StoreDirectory is the absolute path of a Nix store in the local filesystem.

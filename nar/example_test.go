@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"zombiezen.com/go/nix/nar"
+	"github.com/wrouesnel/go-nix/nar"
 )
 
 func ExampleReader() {

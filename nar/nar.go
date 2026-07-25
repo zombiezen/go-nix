@@ -88,49 +88,49 @@ func (fi headerFileInfo) Name() string {
 
 // Tokens
 const (
-	magic = "nix-archive-1"
+	Magic = "nix-archive-1"
 
-	typeRegular   = "regular"
-	typeDirectory = "directory"
-	typeSymlink   = "symlink"
+	TypeRegular   = "regular"
+	TypeDirectory = "directory"
+	TypeSymlink   = "symlink"
 
-	typeToken = "type"
+	TypeToken = "type"
 
-	executableToken = "executable"
-	contentsToken   = "contents"
-	targetToken     = "target"
+	ExecutableToken = "executable"
+	ContentsToken   = "contents"
+	TargetToken     = "target"
 
-	entryToken = "entry"
-	nameToken  = "name"
-	nodeToken  = "node"
+	EntryToken = "entry"
+	NameToken  = "name"
+	NodeToken  = "node"
 )
 
 const (
-	entryNameMaxLen     = 255
-	symlinkTargetMaxLen = 4095
+	EntryNameMaxLen     = 255
+	SymlinkTargetMaxLen = 4095
 )
 
-const stringAlign = 8
+const StringAlign = 8
 
-// padStringSize returns the smallest integer >= n
+// PadStringSize returns the smallest integer >= n
 // that is evenly divisible by [stringAlign].
-func padStringSize(n int) int {
-	return (n + stringAlign - 1) &^ (stringAlign - 1)
+func PadStringSize(n int) int {
+	return (n + StringAlign - 1) &^ (StringAlign - 1)
 }
 
-// stringPaddingLength returns the difference between
+// StringPaddingLength returns the difference between
 // the result of [padStringSize] of n
 // and the n.
-func stringPaddingLength(n int) int {
-	return (^n + 1) & (stringAlign - 1)
+func StringPaddingLength(n int) int {
+	return (^n + 1) & (StringAlign - 1)
 }
 
-func validateFilename(name string) error {
+func ValidateFilename(name string) error {
 	if name == "" {
 		return fmt.Errorf("empty filename")
 	}
-	if len(name) > entryNameMaxLen {
-		return fmt.Errorf("filename longer than %d characters", entryNameMaxLen)
+	if len(name) > EntryNameMaxLen {
+		return fmt.Errorf("filename longer than %d characters", EntryNameMaxLen)
 	}
 	if !utf8.ValidString(name) {
 		return fmt.Errorf("filename is not UTF-8")

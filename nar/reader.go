@@ -30,7 +30,7 @@ type Reader struct {
 	r   io.Reader
 	off int64
 	// buf is a temporary buffer used for reading.
-	// Its length is a multiple of stringAlign
+	// Its length is a multiple of StringAlign
 	// that is sufficient to hold any of the known tokens in the NAR format.
 	buf   [16]byte
 	state int8
@@ -82,7 +82,7 @@ func (nr *Reader) Next() (_ *Header, err error) {
 
 	switch nr.state {
 	case readerStateFirst:
-		if err := nr.expect(magic); err != nil {
+		if err := nr.expect(Magic); err != nil {
 			return nil, fmt.Errorf("nar: magic number: %w", err)
 		}
 		hdr := new(Header)
@@ -155,31 +155,31 @@ func (nr *Reader) Next() (_ *Header, err error) {
 				} else {
 					nr.prefix = nr.prefix[:prevSlash+len("/")]
 				}
-			case entryToken:
+			case EntryToken:
 				break popLoop
 			default:
-				return nil, fmt.Errorf("nar: directory: got %q token (expected \")\" or %q)", nr.buf[:n], entryToken)
+				return nil, fmt.Errorf("nar: directory: got %q token (expected \")\" or %q)", nr.buf[:n], EntryToken)
 			}
 		}
 
 		if err := nr.expect("("); err != nil {
 			return nil, fmt.Errorf("nar: directory: %w", err)
 		}
-		if err := nr.expect(nameToken); err != nil {
+		if err := nr.expect(NameToken); err != nil {
 			return nil, fmt.Errorf("nar: directory: %w", err)
 		}
-		name, err := nr.readString(entryNameMaxLen)
+		name, err := nr.readString(EntryNameMaxLen)
 		if err != nil {
 			return nil, fmt.Errorf("nar: directory: entry name: %w", err)
 		}
-		if err := validateFilename(name); err != nil {
+		if err := ValidateFilename(name); err != nil {
 			return nil, fmt.Errorf("nar: directory: entry name: %v", err)
 		}
 		if last := nr.nameStack[len(nr.nameStack)-1]; last >= name {
 			return nil, fmt.Errorf("nar: directory: entry name %q >= %q", last, name)
 		}
 		nr.nameStack[len(nr.nameStack)-1] = name
-		if err := nr.expect(nodeToken); err != nil {
+		if err := nr.expect(NodeToken); err != nil {
 			return nil, fmt.Errorf("nar: directory: %w", err)
 		}
 		hdr := &Header{Path: nr.prefix + name}
@@ -242,25 +242,25 @@ func (nr *Reader) node(hdr *Header) error {
 		return fmt.Errorf("type: %w", err)
 	}
 	switch string(nr.buf[:n]) {
-	case typeRegular:
+	case TypeRegular:
 		n, err := nr.readSmallString()
 		if err != nil {
 			return fmt.Errorf("regular: %w", err)
 		}
 		hdr.Mode = modeRegular
 		switch string(nr.buf[:n]) {
-		case executableToken:
+		case ExecutableToken:
 			hdr.Mode = modeExecutable
 			if err := nr.expect(""); err != nil {
 				return err
 			}
-			if err := nr.expect(contentsToken); err != nil {
+			if err := nr.expect(ContentsToken); err != nil {
 				return err
 			}
-		case contentsToken:
+		case ContentsToken:
 			// Do nothing.
 		default:
-			return fmt.Errorf("regular: got %q token (expected %q or %q)", nr.buf[:n], executableToken, contentsToken)
+			return fmt.Errorf("regular: got %q token (expected %q or %q)", nr.buf[:n], ExecutableToken, ContentsToken)
 		}
 		unsignedSize, err := nr.readInt()
 		if err != nil {
@@ -273,21 +273,21 @@ func (nr *Reader) node(hdr *Header) error {
 		hdr.ContentOffset = nr.off
 		nr.state = readerStateFile
 		nr.remaining = int64(unsignedSize)
-		nr.padding = int8(stringPaddingLength(int(unsignedSize % stringAlign)))
-	case typeDirectory:
+		nr.padding = int8(StringPaddingLength(int(unsignedSize % StringAlign)))
+	case TypeDirectory:
 		if hdr.Path != "" {
 			nr.prefix = hdr.Path + "/"
 		}
 		hdr.Mode = modeDirectory
 		nr.state = readerStateDirectoryStart
 		nr.nameStack = append(nr.nameStack, "")
-	case typeSymlink:
-		if err := nr.expect(targetToken); err != nil {
+	case TypeSymlink:
+		if err := nr.expect(TargetToken); err != nil {
 			return fmt.Errorf("symlink: %w", err)
 		}
 		hdr.ContentOffset = nr.off + 8
 		var err error
-		hdr.LinkTarget, err = nr.readString(symlinkTargetMaxLen)
+		hdr.LinkTarget, err = nr.readString(SymlinkTargetMaxLen)
 		if err != nil {
 			return fmt.Errorf("symlink target: %w", err)
 		}
@@ -356,7 +356,7 @@ func (nr *Reader) readSmallString() (n int, err error) {
 	if nn > uint64(len(nr.buf)) {
 		return 0, fmt.Errorf("got string of length %d (max %d in this context)", nn, len(nr.buf))
 	}
-	if err := nr.read(nr.buf[:padStringSize(int(nn))]); err != nil {
+	if err := nr.read(nr.buf[:PadStringSize(int(nn))]); err != nil {
 		return 0, err
 	}
 	return int(nn), nil
@@ -370,7 +370,7 @@ func (nr *Reader) readString(maxLength int) (string, error) {
 	if n > uint64(maxLength) {
 		return "", fmt.Errorf("got string of length %d (max %d in this context)", n, maxLength)
 	}
-	buf := make([]byte, padStringSize(int(n)))
+	buf := make([]byte, PadStringSize(int(n)))
 	if err := nr.read(buf); err != nil {
 		return "", err
 	}

@@ -1,6 +1,6 @@
-module zombiezen.com/go/nix
+module github.com/wrouesnel/go-nix
 
-go 1.19
+go 1.26
 
 require (
 	github.com/google/go-cmp v0.5.4

@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"zombiezen.com/go/nix"
+	"github.com/wrouesnel/go-nix"
 )
 
 func newKeyCommand() *cobra.Command {
